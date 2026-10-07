@@ -1,4 +1,7 @@
-﻿<div class="top-row ps-3 navbar navbar-dark">
+﻿@inject HttpClient Http
+@inject NavigationManager NavManager
+
+<div class="top-row ps-3 navbar navbar-dark">
     <div class="container-fluid">
         <a class="navbar-brand" href="">CollabSpace</a>
     </div>
@@ -25,6 +28,57 @@
                 <span class="bi bi-list-nested-nav-menu" aria-hidden="true"></span> Weather
             </NavLink>
         </div>
+
+        <AuthorizeView>
+            <Authorized>
+                <!-- Visible only to logged-in users -->
+                <div class="nav-item px-3">
+                    <NavLink class="nav-link" href="users" Match="NavLinkMatch.Prefix">
+                        <span class="bi bi-people-fill-nav-menu" aria-hidden="true"></span> CollabSpace Users
+                    </NavLink>
+                </div>
+
+                <div class="nav-item px-3">
+                    <NavLink class="nav-link" href="workspaces">
+                       <span class="bi bi-briefcase-fill" aria-hidden="true"></span> Workspaces
+                    </NavLink>
+               </div>
+
+                <!-- User profile badge & logout -->
+                <div class="nav-item px-3 mt-3 border-top pt-2">
+                    <span class="text-white-50 small px-3">Signed in as:</span>
+                    <div class="text-white fw-semibold px-3 text-truncate">@context.User.Identity?.Name</div>
+
+                    <AuthorizeView Roles="Admin" Context="adminContext">
+                        <div class="px-3 mt-1">
+                            <span class="badge bg-warning text-dark">Admin</span>
+                        </div>
+                    </AuthorizeView>
+
+                    <div class="px-3 mt-2">
+                        <button class="btn btn-sm btn-outline-danger w-100" @onclick="HandleLogout">
+                            Sign Out
+                        </button>
+                    </div>
+                </div>
+
+            </Authorized>
+            <NotAuthorized>
+                <!-- Visible only to guests -->
+                <div class="nav-item px-3">
+                    <NavLink class="nav-link" href="login">
+                        <span class="bi bi-box-arrow-in-right" aria-hidden="true"></span> Sign In / Register
+                    </NavLink>
+                </div>
+            </NotAuthorized>
+        </AuthorizeView>
     </nav>
 </div>
 
+@code {
+    private async Task HandleLogout()
+    {
+        await Http.PostAsync("api/Auth/logout", null);
+        NavManager.NavigateTo("/login", forceLoad: true);
+    }
+}

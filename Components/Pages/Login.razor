@@ -1,0 +1,175 @@
+﻿@page "/login"
+@inject HttpClient Http
+@inject NavigationManager NavManager
+
+<PageTitle>CollabSpace - Sign In / Register</PageTitle>
+
+<div class="container mt-5">
+    <div class="row justify-content-center">
+        <div class="col-md-5">
+            <div class="card shadow">
+                <div class="card-header bg-primary text-white text-center py-3">
+                    <h4 class="mb-0">CollabSpace Account</h4>
+                </div>
+
+                <div class="card-body p-4">
+                    <!-- Tab Switcher -->
+                    <ul class="nav nav-pills nav-fill mb-3">
+                        <li class="nav-item">
+                            <button class="nav-link @(isLoginMode ? "active" : "")"
+                                    @onclick="() => SetMode(true)">
+                                Sign In
+                            </button>
+                        </li>
+                        <li class="nav-item">
+                            <button class="nav-link @(!isLoginMode ? "active" : "")"
+                                    @onclick="() => SetMode(false)">
+                                Register
+                            </button>
+                        </li>
+                    </ul>
+
+                    @if (!string.IsNullOrEmpty(errorQuery))
+                    {
+                        <div class="alert alert-danger py-2 small" role="alert">
+                            @errorQuery
+                        </div>
+                    }
+
+                    @if (!string.IsNullOrEmpty(statusMessage))
+                    {
+                        <div class="alert alert-success py-2 small" role="alert">
+                            @statusMessage
+                        </div>
+                    }
+
+                    @if (isLoginMode)
+                    {
+                        <!-- Standard HTML Form Post: Browser submits directly to API to receive the cookie -->
+                        <form method="post" action="/api/Auth/form-login">
+                            <AntiforgeryToken />
+
+                            <div class="mb-3">
+                                <label class="form-label">Email</label>
+                                <input class="form-control" type="email" name="Email" required />
+                            </div>
+
+                            <div class="mb-3">
+                                <label class="form-label">Password</label>
+                                <input class="form-control" type="password" name="Password" required />
+                            </div>
+
+                            <div class="form-check mb-3">
+                                <input class="form-check-input" type="checkbox" name="RememberMe" value="true" id="rememberCheck" />
+                                <label class="form-check-label" for="rememberCheck">Remember Me</label>
+                            </div>
+
+                            <button type="submit" class="btn btn-primary w-100">Sign In</button>
+                        </form>
+                    }
+                    else
+                    {
+                        <!-- Register Form -->
+                        <EditForm Model="registerModel" OnValidSubmit="HandleRegister">
+                            <DataAnnotationsValidator />
+
+                            <div class="mb-3">
+                                <label class="form-label">Username</label>
+                                <InputText class="form-control" @bind-Value="registerModel.UserName" required />
+                            </div>
+
+                            <div class="mb-3">
+                                <label class="form-label">Full Name</label>
+                                <InputText class="form-control" @bind-Value="registerModel.Name" required />
+                            </div>
+
+                            <div class="mb-3">
+                                <label class="form-label">Email</label>
+                                <InputText class="form-control" type="email" @bind-Value="registerModel.Email" required />
+                            </div>
+
+                            <div class="mb-3">
+                                <label class="form-label">Password (Min 6 chars, 1 digit)</label>
+                                <InputText class="form-control" type="password" @bind-Value="registerModel.Password" required />
+                            </div>
+
+                            <div class="mb-3">
+                                <label class="form-label">Initial Role</label>
+                                <InputSelect class="form-select" @bind-Value="registerModel.Role">
+                                    <option value="Member">Member</option>
+                                    <option value="Admin">Admin</option>
+                                </InputSelect>
+                            </div>
+
+                            <button type="submit" class="btn btn-success w-100" disabled="@isLoading">
+                                @(isLoading ? "Registering..." : "Create Account")
+                            </button>
+                        </EditForm>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+
+    [SupplyParameterFromQuery(Name = "error")]
+    private string? errorQuery { get; set; }
+
+    private bool isLoginMode = true;
+    private bool isLoading = false;
+    private string? statusMessage;
+
+    private RegisterRequest registerModel = new();
+
+    private void SetMode(bool login)
+    {
+        isLoginMode = login;
+        errorQuery = null;
+        statusMessage = null;
+    }
+
+    private async Task HandleRegister()
+    {
+        isLoading = true;
+        errorQuery = null;
+        statusMessage = null;
+
+        try
+        {
+            var response = await Http.PostAsJsonAsync("api/Auth/register", registerModel);
+
+            if (response.IsSuccessStatusCode)
+            {
+                statusMessage = "Account registered successfully! You can now sign in.";
+                isLoginMode = true;
+                registerModel = new();
+            }
+            else
+            {
+                var errorObj = await response.Content.ReadFromJsonAsync<Dictionary<string, string>>();
+                errorQuery = errorObj != null && errorObj.TryGetValue("message", out var msg)
+                    ? msg
+                    : "Registration failed.";
+            }
+        }
+        catch (Exception ex)
+        {
+            errorQuery = $"Error: {ex.Message}";
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    public class RegisterRequest
+    {
+        public string UserName { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
+        public string Email { get; set; } = string.Empty;
+        public string Password { get; set; } = string.Empty;
+        public string Role { get; set; } = "Member";
+    }
+}

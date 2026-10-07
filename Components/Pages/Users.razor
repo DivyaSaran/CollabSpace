@@ -1,0 +1,329 @@
+﻿@page "/users"
+@attribute [Authorize(Roles = "Admin")]
+@using CollabSpace.Data
+@using CollabSpace.Models
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.AspNetCore.Identity
+@using Microsoft.EntityFrameworkCore
+@inject UserManager<User> UserManager
+@inject ApplicationDbContext DbContext
+
+<PageTitle>CollabSpace Users</PageTitle>
+
+<div class="container mt-4">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h2 class="fw-bold">CollabSpace Users Directory</h2>
+        <button class="btn btn-primary" @onclick="OpenCreateModal">
+            <i class="bi bi-plus-lg"></i> Add User
+        </button>
+    </div>
+
+    @if (!string.IsNullOrEmpty(statusMessage))
+    {
+        <div class="alert alert-success alert-dismissible fade show" role="alert">
+            @statusMessage
+            <button type="button" class="btn-close" @onclick="() => statusMessage = null"></button>
+        </div>
+    }
+
+    @if (!string.IsNullOrEmpty(errorMessage))
+    {
+        <div class="alert alert-danger alert-dismissible fade show" role="alert">
+            @errorMessage
+            <button type="button" class="btn-close" @onclick="() => errorMessage = null"></button>
+        </div>
+    }
+
+    @if (users == null)
+    {
+        <p><em>Loading users...</em></p>
+    }
+    else if (!users.Any())
+    {
+        <div class="card p-4 text-center text-muted">
+            No users found in the database. Click "Add User" to get started.
+        </div>
+    }
+    else
+    {
+        <div class="card shadow-sm">
+            <div class="table-responsive">
+                <table class="table table-hover align-middle mb-0">
+                    <thead class="table-dark">
+                        <tr>
+                            <th>Username</th>
+                            <th>Name</th>
+                            <th>Email</th>
+                            <th class="text-center" style="width: 180px;">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var user in users)
+                        {
+                            <tr>
+                                <td class="fw-semibold">@user.UserName</td>
+                                <td>@user.Name</td>
+                                <td>@user.Email</td>
+                                <td class="text-center">
+                                    <button class="btn btn-sm btn-outline-primary me-1" @onclick="() => OpenEditModal(user)">
+                                        Edit
+                                    </button>
+                                    <button class="btn btn-sm btn-outline-danger" @onclick="() => DeleteUser(user.Id)">
+                                        Delete
+                                    </button>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="card-footer d-flex justify-content-between align-items-center bg-white py-3">
+                <span class="text-muted small">
+                    Showing @(totalCount == 0 ? 0 : ((currentPage - 1) * pageSize) + 1) to @(Math.Min(currentPage * pageSize, totalCount)) of @totalCount entries
+                </span>
+                <nav>
+                    <ul class="pagination pagination-sm mb-0">
+                        <li class="page-item @(currentPage == 1 ? "disabled" : "")">
+                            <button class="page-link" @onclick="() => ChangePage(currentPage - 1)">Previous</button>
+                        </li>
+                        @for (int i = 1; i <= totalPages; i++)
+                        {
+                            var pageIdx = i;
+                            <li class="page-item @(currentPage == pageIdx ? "active" : "")">
+                                <button class="page-link" @onclick="() => ChangePage(pageIdx)">@pageIdx</button>
+                            </li>
+                        }
+                        <li class="page-item @(currentPage == totalPages || totalPages == 0 ? "disabled" : "")">
+                            <button class="page-link" @onclick="() => ChangePage(currentPage + 1)">Next</button>
+                        </li>
+                    </ul>
+                </nav>
+            </div>
+        </div>
+    }
+</div>
+
+@* Modal Form for Create / Edit *@
+@if (isModalOpen)
+{
+    <div class="modal fade show d-block" tabindex="-1" style="background-color: rgba(0,0,0,0.5);">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">@(isEditing ? "Edit User" : "Add New User")</h5>
+                    <button type="button" class="btn-close" @onclick="CloseModal"></button>
+                </div>
+                <EditForm Model="userForm" OnValidSubmit="SaveUser">
+                    <DataAnnotationsValidator />
+                    <ValidationSummary class="text-danger small px-3" />
+
+                    <div class="modal-body">
+                        <div class="mb-3">
+                            <label class="form-label">Username</label>
+                            <InputText class="form-control" @bind-Value="userForm.UserName" required />
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Name</label>
+                            <InputText class="form-control" @bind-Value="userForm.Name" required />
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Email</label>
+                            <InputText class="form-control" type="email" @bind-Value="userForm.Email" required />
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Password @(isEditing ? "(Leave blank to keep current password)" : "")</label>
+                            <InputText class="form-control" type="password" @bind-Value="userForm.Password" required="@(!isEditing)" />
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" @onclick="CloseModal">Cancel</button>
+                        <button type="submit" class="btn btn-primary">@(isEditing ? "Save Changes" : "Create User")</button>
+                    </div>
+                </EditForm>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private List<User>? users;
+    private UserFormModel userForm = new();
+    private string? errorMessage;    
+    private string? statusMessage;
+    private bool isModalOpen = false;
+    private bool isEditing = false;
+    private int currentPage = 1;
+    private int pageSize = 5;
+    private int totalCount = 0;
+    private int totalPages = 0;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAllUsers();
+    }
+
+    private async Task LoadAllUsers()
+    {        
+        try
+        {
+            totalCount = await DbContext.Users.CountAsync();
+            totalPages = (int)Math.Ceiling(totalCount / (double)pageSize);
+
+            users = await DbContext.Users
+                .AsNoTracking()
+                .OrderBy(u => u.UserName)
+                .Skip((currentPage - 1) * pageSize)
+                .Take(pageSize)
+                .ToListAsync();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error loading users: {ex.Message}";
+        }
+    }
+
+    private async Task ChangePage(int newPage)
+    {
+        if (newPage < 1 || (totalPages > 0 && newPage > totalPages)) return;
+        currentPage = newPage;
+        await LoadAllUsers();
+    }
+
+    private void OpenCreateModal()
+    {
+        userForm = new UserFormModel();
+        isEditing = false;
+        isModalOpen = true;
+    }
+
+    private void OpenEditModal(User user)
+    {
+        userForm = new UserFormModel
+        {
+            Id = user.Id,
+            UserName = user.UserName ?? string.Empty,
+            Name = user.Name,
+            Email = user.Email ?? string.Empty,
+            Password = string.Empty
+        };
+        isEditing = true;
+        isModalOpen = true;
+    }
+
+    private void CloseModal()
+    {
+        isModalOpen = false;
+        userForm = new();
+    }
+
+    private async Task SaveUser()
+    {
+        statusMessage = null;
+        errorMessage = null;
+
+        try
+        {
+            if (isEditing)
+            {
+                var existingUser = await UserManager.FindByIdAsync(userForm.Id!);
+                if (existingUser == null)
+                {
+                    errorMessage = "User not found.";
+                    return;
+                }
+
+                existingUser.UserName = userForm.UserName;
+                existingUser.Name = userForm.Name;
+                existingUser.Email = userForm.Email;
+
+                var updateResult = await UserManager.UpdateAsync(existingUser);
+                if (!updateResult.Succeeded)
+                {
+                    errorMessage = string.Join(", ", updateResult.Errors.Select(e => e.Description));
+                    return;
+                }
+
+                // If password was entered, update it
+                if (!string.IsNullOrWhiteSpace(userForm.Password))
+                {
+                    var token = await UserManager.GeneratePasswordResetTokenAsync(existingUser);
+                    var resetResult = await UserManager.ResetPasswordAsync(existingUser, token, userForm.Password);
+                    if (!resetResult.Succeeded)
+                    {
+                        errorMessage = string.Join(", ", resetResult.Errors.Select(e => e.Description));
+                        return;
+                    }
+                }
+
+                statusMessage = "User updated successfully!";
+            }
+            else
+            {
+                var newUser = new User
+                {
+                    UserName = userForm.UserName,
+                    Name = userForm.Name,
+                    Email = userForm.Email
+                };
+
+                var createResult = await UserManager.CreateAsync(newUser, userForm.Password!);
+                if (!createResult.Succeeded)
+                {
+                    errorMessage = string.Join(", ", createResult.Errors.Select(e => e.Description));
+                    return;
+                }
+
+                await UserManager.AddToRoleAsync(newUser, "Member");
+                statusMessage = "User created successfully!";
+            }
+
+            CloseModal();
+            await LoadAllUsers();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error saving user: {ex.Message}";
+        }
+    }
+
+    private async Task DeleteUser(string id)
+    {
+        statusMessage = null;
+        errorMessage = null;
+
+        try
+        {
+            var user = await UserManager.FindByIdAsync(id);
+            if (user != null)
+            {
+                var result = await UserManager.DeleteAsync(user);
+                if (result.Succeeded)
+                {
+                    statusMessage = "User deleted successfully!";
+                    await LoadAllUsers();
+                }
+                else
+                {
+                    errorMessage = string.Join(", ", result.Errors.Select(e => e.Description));
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Failed to delete user: {ex.Message}";
+        }
+    }
+
+    public class UserFormModel
+    {
+        public string? Id { get; set; }
+        public string UserName { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
+        public string Email { get; set; } = string.Empty;
+        public string? Password { get; set; }
+    }
+}
+
+
+
