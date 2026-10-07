@@ -1,0 +1,918 @@
+﻿@page "/workspaces"
+@attribute [Authorize]
+@using System.Security.Claims
+@using CollabSpace.Data
+@using CollabSpace.Models
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.AspNetCore.Identity
+@using Microsoft.EntityFrameworkCore
+@inject AuthenticationStateProvider AuthStateProvider
+@inject ApplicationDbContext DbContext
+@inject UserManager<User> UserManager
+
+<PageTitle>CollabSpace - Workspaces</PageTitle>
+
+<div class="container mt-4">
+    <!-- Header with Admin Action -->
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h2 class="fw-bold mb-0">Collaboration Workspaces</h2>
+            <p class="text-muted small mb-0">Manage shared team environments and active collaborations.</p>
+        </div>
+        <AuthorizeView Roles="Admin">
+            <Authorized>
+                <button class="btn btn-primary" @onclick="() => showCreateModal = true">
+                    <i class="bi bi-plus-lg"></i> Create Workspace
+                </button>
+            </Authorized>
+        </AuthorizeView>
+    </div>
+
+    <!-- Feedback Alerts -->
+    @if (!string.IsNullOrEmpty(statusMessage))
+    {
+        <div class="alert alert-success alert-dismissible fade show" role="alert">
+            @statusMessage
+            <button type="button" class="btn-close" @onclick="() => statusMessage = null"></button>
+        </div>
+    }
+
+    @if (!string.IsNullOrEmpty(errorMessage))
+    {
+        <div class="alert alert-danger alert-dismissible fade show" role="alert">
+            @errorMessage
+            <button type="button" class="btn-close" @onclick="() => errorMessage = null"></button>
+        </div>
+    }
+
+    <!-- Pending Invitations Section -->
+    @if (pendingInvites != null && pendingInvites.Any())
+    {
+        <div class="card border-info mb-4 shadow-sm">
+            <div class="card-header bg-info text-white fw-bold">
+                <i class="bi bi-envelope-open-fill me-1"></i> Pending Workspace Invitations
+            </div>
+            <div class="card-body p-0">
+                <ul class="list-group list-group-flush">
+                    @foreach (var invite in pendingInvites)
+                    {
+                        <li class="list-group-item d-flex justify-content-between align-items-center py-3">
+                            <div>
+                                <h6 class="mb-1 fw-bold">@invite.WorkspaceName</h6>
+                                <p class="mb-0 text-muted small">Invited by: <strong>@invite.SenderName</strong> &bull; Received: @invite.SentAt.ToShortDateString()</p>
+                            </div>
+                            <div>
+                                <button class="btn btn-sm btn-success me-2" @onclick="() => RespondInvite(invite.Id, true)">
+                                    Accept
+                                </button>
+                                <button class="btn btn-sm btn-outline-danger" @onclick="() => RespondInvite(invite.Id, false)">
+                                    Decline
+                                </button>
+                            </div>
+                        </li>
+                    }
+                </ul>
+            </div>
+        </div>
+    }
+
+    <!-- Main Workspace Layout -->
+    <div class="row">
+        <!-- Workspaces List Column -->
+        <div class="col-md-5 mb-3">
+            <div class="card shadow-sm h-100">
+                <div class="card-header bg-dark text-white fw-semibold">
+                    My Workspaces
+                </div>
+                <div class="card-body p-0">
+                    @if (myWorkspaces == null)
+                    {
+                        <div class="p-3 text-muted"><em>Loading workspaces...</em></div>
+                    }
+                    else if (!myWorkspaces.Any())
+                    {
+                        <div class="p-4 text-center text-muted">
+                            You are not currently part of any workspace.
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="list-group list-group-flush">
+                            @foreach (var ws in myWorkspaces)
+                            {
+                                var isSelected = selectedWorkspace?.Id == ws.Id;
+                                <button class="list-group-item list-group-item-action @(isSelected ? "active" : "")"
+                                        @onclick="() => SelectWorkspace(ws)">
+                                    <div class="d-flex w-100 justify-content-between align-items-center">
+                                        <h6 class="mb-1 fw-bold">@ws.Name</h6>
+                                        <span class="badge @(ws.WorkspaceRole == "WorkspaceAdmin" ? "bg-warning text-dark" : "bg-secondary")">
+                                            @ws.WorkspaceRole
+                                        </span>
+                                    </div>
+                                    <small class="@(isSelected ? "text-white-50" : "text-muted")">
+                                        @(string.IsNullOrWhiteSpace(ws.Description) ? "No description provided." : ws.Description)
+                                    </small>
+                                </button>
+                            }
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+
+        <!-- Selected Workspace Detail Column -->
+        <div class="col-md-7 mb-3">
+            @if (selectedWorkspace == null)
+            {
+                <div class="card shadow-sm h-100 d-flex align-items-center justify-content-center p-5 text-muted">
+                    <p class="mb-0">Select a workspace from the left to view members and collaboration options.</p>
+                </div>
+            }
+            else
+            {
+                <div class="card shadow-sm h-100">
+                    <div class="card-header bg-white d-flex justify-content-between align-items-center py-3">
+                        <div>
+                            <h5 class="mb-0 fw-bold">@selectedWorkspace.Name</h5>
+                            <small class="text-muted">Created: @selectedWorkspace.CreatedAt.ToShortDateString()</small>
+                        </div>
+                        @if (selectedWorkspace.WorkspaceRole == "WorkspaceAdmin")
+                        {
+                            <button class="btn btn-sm btn-outline-primary" @onclick="() => showInviteModal = true">
+                                <i class="bi bi-person-plus-fill me-1"></i> Invite Member
+                            </button>
+                        }
+                    </div>
+
+                    <div class="card-body">
+                        <h6 class="fw-bold mb-3">Active Workspace Members</h6>
+                        @if (workspaceMembers == null)
+                        {
+                            <p class="text-muted"><em>Loading members...</em></p>
+                        }
+                        else
+                        {
+                            <div class="table-responsive">
+                                <table class="table table-sm table-hover align-middle mb-0">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th>Name</th>
+                                            <th>Email</th>
+                                            <th>Role</th>
+                                            <th>Joined</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach (var member in workspaceMembers)
+                                        {
+                                            <tr>
+                                                <td class="fw-semibold">@member.Name</td>
+                                                <td>@member.Email</td>
+                                                <td>
+                                                    <span class="badge @(member.WorkspaceRole == "WorkspaceAdmin" ? "bg-warning text-dark" : "bg-light text-dark border")">
+                                                        @member.WorkspaceRole
+                                                    </span>
+                                                </td>
+                                                <td class="small text-muted">@member.JoinedAt.ToShortDateString()</td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                            </div>
+                        }
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Create Workspace -->
+@if (showCreateModal)
+{
+    <div class="modal fade show d-block" style="background-color: rgba(0,0,0,0.5);">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Create New Workspace</h5>
+                    <button type="button" class="btn-close" @onclick="() => showCreateModal = false"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">Workspace Name</label>
+                        <input type="text" class="form-control" @bind="newWsName" placeholder="e.g. Core API Project" />
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Description</label>
+                        <textarea class="form-control" rows="3" @bind="newWsDescription" placeholder="Project goals, guidelines, or repo details..."></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" @onclick="() => showCreateModal = false">Cancel</button>
+                    <button class="btn btn-primary" @onclick="CreateWorkspace">Create</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+<!-- Modal: Invite Member -->
+@if (showInviteModal)
+{
+    <div class="modal fade show d-block" style="background-color: rgba(0,0,0,0.5);">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Invite Member to Workspace</h5>
+                    <button type="button" class="btn-close" @onclick="() => showInviteModal = false"></button>
+                </div>
+                <div class="modal-body">
+                    <label class="form-label">Registered User Email</label>
+                    <input type="email" class="form-control" @bind="inviteEmail" placeholder="colleague@domain.com" />
+                    <small class="text-muted">The user must have an existing account on CollabSpace.</small>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" @onclick="() => showInviteModal = false">Cancel</button>
+                    <button class="btn btn-primary" @onclick="SendInvite">Send Invitation</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private List<WorkspaceItem>? myWorkspaces;
+    private WorkspaceItem? selectedWorkspace;
+    private List<MemberItem>? workspaceMembers;
+    private List<InviteItem>? pendingInvites;
+
+    private bool showCreateModal = false;
+    private bool showInviteModal = false;
+    private string newWsName = string.Empty;
+    private string newWsDescription = string.Empty;
+    private string inviteEmail = string.Empty;
+
+    private string? currentUserId;
+    private string? statusMessage;
+    private string? errorMessage;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        currentUserId = authState.User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        if (!string.IsNullOrEmpty(currentUserId))
+        {
+            await LoadData();
+        }
+    }
+
+    private async Task LoadData()
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(currentUserId)) return;
+
+            myWorkspaces = await DbContext.WorkspaceMembers
+                .AsNoTracking()
+                .Where(wm => wm.UserId == currentUserId)
+                .Select(wm => new WorkspaceItem
+                {
+                    Id = wm.Workspace.Id,
+                    Name = wm.Workspace.Name,
+                    Description = wm.Workspace.Description,
+                    WorkspaceRole = wm.WorkspaceRole,
+                    CreatedAt = wm.Workspace.CreatedAt
+                })
+                .ToListAsync();
+
+            pendingInvites = await DbContext.WorkspaceInvites
+                .AsNoTracking()
+                .Where(wi => wi.ReceiverUserId == currentUserId && wi.Status == "Pending")
+                .Select(wi => new InviteItem
+                {
+                    Id = wi.Id,
+                    WorkspaceId = wi.WorkspaceId,
+                    WorkspaceName = wi.Workspace.Name,
+                    WorkspaceDescription = wi.Workspace.Description,
+                    SenderName = wi.SenderUser.Name,
+                    SentAt = wi.SentAt
+                })
+                .ToListAsync();
+
+            if (selectedWorkspace != null)
+            {
+                var refreshedSelection = myWorkspaces.FirstOrDefault(w => w.Id == selectedWorkspace.Id);
+                if (refreshedSelection != null)
+                {
+                    await SelectWorkspace(refreshedSelection);
+                }
+                else
+                {
+                    selectedWorkspace = null;
+                }
+            }
+            else if (myWorkspaces.Any())
+            {
+                await SelectWorkspace(myWorkspaces.First());
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error loading data: {ex.Message}";
+        }
+    }
+
+    private async Task SelectWorkspace(WorkspaceItem ws)
+    {
+        selectedWorkspace = ws;
+        try
+        {
+            workspaceMembers = await DbContext.WorkspaceMembers
+                .AsNoTracking()
+                .Where(wm => wm.WorkspaceId == ws.Id)
+                .Select(wm => new MemberItem
+                {
+                    UserId = wm.UserId,
+                    UserName = wm.User.UserName ?? string.Empty,
+                    Name = wm.User.Name,
+                    Email = wm.User.Email ?? string.Empty,
+                    WorkspaceRole = wm.WorkspaceRole,
+                    JoinedAt = wm.JoinedAt
+                })
+                .ToListAsync();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error loading members: {ex.Message}";
+        }
+    }
+
+    private async Task CreateWorkspace()
+    {
+        if (string.IsNullOrWhiteSpace(newWsName) || string.IsNullOrEmpty(currentUserId)) return;
+
+        statusMessage = null;
+        errorMessage = null;
+
+        try
+        {
+            var ws = new Workspace
+            {
+                Name = newWsName.Trim(),
+                Description = newWsDescription.Trim(),
+                OwnerId = currentUserId
+            };
+
+            DbContext.Workspaces.Add(ws);
+            await DbContext.SaveChangesAsync();
+
+            var membership = new WorkspaceMember
+            {
+                WorkspaceId = ws.Id,
+                UserId = currentUserId,
+                WorkspaceRole = "WorkspaceAdmin"
+            };
+
+            DbContext.WorkspaceMembers.Add(membership);
+            await DbContext.SaveChangesAsync();
+
+            statusMessage = "Workspace created successfully.";
+            showCreateModal = false;
+            newWsName = string.Empty;
+            newWsDescription = string.Empty;
+
+            await LoadData();
+            var created = myWorkspaces?.FirstOrDefault(w => w.Id == ws.Id);
+            if (created != null)
+            {
+                await SelectWorkspace(created);
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Failed to create workspace: {ex.Message}";
+        }
+    }
+
+    private async Task SendInvite()
+    {
+        if (selectedWorkspace == null || string.IsNullOrWhiteSpace(inviteEmail) || string.IsNullOrEmpty(currentUserId)) return;
+
+        statusMessage = null;
+        errorMessage = null;
+
+        try
+        {
+            var targetUser = await UserManager.FindByEmailAsync(inviteEmail.Trim());
+            if (targetUser == null)
+            {
+                errorMessage = $"No user found with email '{inviteEmail}'.";
+                return;
+            }
+
+            var isAlreadyMember = await DbContext.WorkspaceMembers
+                .AnyAsync(wm => wm.WorkspaceId == selectedWorkspace.Id && wm.UserId == targetUser.Id);
+
+            if (isAlreadyMember)
+            {
+                errorMessage = "This user is already a member of this workspace.";
+                return;
+            }
+
+            var hasPending = await DbContext.WorkspaceInvites
+                .AnyAsync(wi => wi.WorkspaceId == selectedWorkspace.Id && wi.ReceiverUserId == targetUser.Id && wi.Status == "Pending");
+
+            if (hasPending)
+            {
+                errorMessage = "An invitation is already pending for this user.";
+                return;
+            }
+
+            var invite = new WorkspaceInvite
+            {
+                WorkspaceId = selectedWorkspace.Id,
+                SenderUserId = currentUserId,
+                ReceiverUserId = targetUser.Id,
+                Status = "Pending"
+            };
+
+            DbContext.WorkspaceInvites.Add(invite);
+            await DbContext.SaveChangesAsync();
+
+            statusMessage = $"Invitation successfully sent to {inviteEmail}.";
+            showInviteModal = false;
+            inviteEmail = string.Empty;
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Failed to send invitation: {ex.Message}";
+        }
+    }
+
+    private async Task RespondInvite(int inviteId, bool accept)
+    {
+        if (string.IsNullOrEmpty(currentUserId)) return;
+
+        statusMessage = null;
+        errorMessage = null;
+
+        try
+        {
+            var invite = await DbContext.WorkspaceInvites
+                .FirstOrDefaultAsync(wi => wi.Id == inviteId && wi.ReceiverUserId == currentUserId && wi.Status == "Pending");
+
+            if (invite == null)
+            {
+                errorMessage = "Invitation not found or already processed.";
+                return;
+            }
+
+            if (accept)
+            {
+                invite.Status = "Accepted";
+                DbContext.WorkspaceMembers.Add(new WorkspaceMember
+                {
+                    WorkspaceId = invite.WorkspaceId,
+                    UserId = currentUserId,
+                    WorkspaceRole = "Member"
+                });
+            }
+            else
+            {
+                invite.Status = "Declined";
+            }
+
+            await DbContext.SaveChangesAsync();
+            statusMessage = accept ? "Invitation accepted!" : "Invitation declined.";
+            await LoadData();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Failed to process invitation: {ex.Message}";
+        }
+    }
+
+    public class WorkspaceItem
+    {
+        public int Id { get; set; }
+        public string Name { get; set; } = string.Empty;
+        public string Description { get; set; } = string.Empty;
+        public string WorkspaceRole { get; set; } = string.Empty;
+        public DateTime CreatedAt { get; set; }
+    }
+
+    public class MemberItem
+    {
+        public string UserId { get; set; } = string.Empty;
+        public string UserName { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
+        public string Email { get; set; } = string.Empty;
+        public string WorkspaceRole { get; set; } = string.Empty;
+        public DateTime JoinedAt { get; set; }
+    }
+
+    public class InviteItem
+    {
+        public int Id { get; set; }
+        public int WorkspaceId { get; set; }
+        public string WorkspaceName { get; set; } = string.Empty;
+        public string WorkspaceDescription { get; set; } = string.Empty;
+        public string SenderName { get; set; } = string.Empty;
+        public DateTime SentAt { get; set; }
+    }
+}
+
+
+
+
+
+
+
+@* Commenting out my previous code to fix 
+   the error "Error loading workspaces: Response status code does
+   not indicate success: 401 (Unauthorized)."*@
+
+   @*
+@page "/workspaces"
+@attribute [Authorize]
+@using CollabSpace.Models
+@inject HttpClient Http
+
+<PageTitle>CollabSpace - Workspaces</PageTitle>
+
+<div class="container mt-4">
+    <!-- Header with Admin Action -->
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h2 class="fw-bold mb-0">Collaboration Workspaces</h2>
+            <p class="text-muted small mb-0">Manage shared team environments and active collaborations.</p>
+        </div>
+        <AuthorizeView Roles="Admin">
+            <Authorized>
+                <button class="btn btn-primary" @onclick="() => showCreateModal = true">
+                    <i class="bi bi-plus-lg"></i> Create Workspace
+                </button>
+            </Authorized>
+        </AuthorizeView>
+    </div>
+
+    <!-- Feedback Alerts -->
+    @if (!string.IsNullOrEmpty(statusMessage))
+    {
+        <div class="alert alert-success alert-dismissible fade show" role="alert">
+            @statusMessage
+            <button type="button" class="btn-close" @onclick="() => statusMessage = null"></button>
+        </div>
+    }
+
+    @if (!string.IsNullOrEmpty(errorMessage))
+    {
+        <div class="alert alert-danger alert-dismissible fade show" role="alert">
+            @errorMessage
+            <button type="button" class="btn-close" @onclick="() => errorMessage = null"></button>
+        </div>
+    }
+
+    <!-- Pending Invitations Section (Visible to everyone if invites exist) -->
+    @if (pendingInvites != null && pendingInvites.Any())
+    {
+        <div class="card border-info mb-4 shadow-sm">
+            <div class="card-header bg-info text-white fw-bold">
+                <i class="bi bi-envelope-open-fill me-1"></i> Pending Workspace Invitations
+            </div>
+            <div class="card-body p-0">
+                <ul class="list-group list-group-flush">
+                    @foreach (var invite in pendingInvites)
+                    {
+                        <li class="list-group-item d-flex justify-content-between align-items-center py-3">
+                            <div>
+                                <h6 class="mb-1 fw-bold">@invite.WorkspaceName</h6>
+                                <p class="mb-0 text-muted small">Invited by: <strong>@invite.SenderName</strong> &bull; Received: @invite.SentAt.ToShortDateString()</p>
+                            </div>
+                            <div>
+                                <button class="btn btn-sm btn-success me-2" @onclick="() => RespondInvite(invite.Id, true)">
+                                    Accept
+                                </button>
+                                <button class="btn btn-sm btn-outline-danger" @onclick="() => RespondInvite(invite.Id, false)">
+                                    Decline
+                                </button>
+                            </div>
+                        </li>
+                    }
+                </ul>
+            </div>
+        </div>
+    }
+
+    <!-- Main Workspace Browser Layout -->
+    <div class="row">
+        <!-- Workspaces List Column -->
+        <div class="col-md-5 mb-3">
+            <div class="card shadow-sm h-100">
+                <div class="card-header bg-dark text-white fw-semibold">
+                    My Workspaces
+                </div>
+                <div class="card-body p-0">
+                    @if (myWorkspaces == null)
+                    {
+                        <div class="p-3 text-muted"><em>Loading workspaces...</em></div>
+                    }
+                    else if (!myWorkspaces.Any())
+                    {
+                        <div class="p-4 text-center text-muted">
+                            You are not currently part of any workspace.
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="list-group list-group-flush">
+                            @foreach (var ws in myWorkspaces)
+                            {
+                                var isSelected = selectedWorkspace?.Id == ws.Id;
+                                <button class="list-group-item list-group-item-action @(isSelected ? "active" : "")"
+                                        @onclick="() => SelectWorkspace(ws)">
+                                    <div class="d-flex w-100 justify-content-between align-items-center">
+                                        <h6 class="mb-1 fw-bold">@ws.Name</h6>
+                                        <span class="badge @(ws.WorkspaceRole == "WorkspaceAdmin" ? "bg-warning text-dark" : "bg-secondary")">
+                                            @ws.WorkspaceRole
+                                        </span>
+                                    </div>
+                                    <small class="@(isSelected ? "text-white-50" : "text-muted")">
+                                        @(string.IsNullOrWhiteSpace(ws.Description) ? "No description provided." : ws.Description)
+                                    </small>
+                                </button>
+                            }
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+
+        <!-- Selected Workspace Detail Column -->
+        <div class="col-md-7 mb-3">
+            @if (selectedWorkspace == null)
+            {
+                <div class="card shadow-sm h-100 d-flex align-items-center justify-content-center p-5 text-muted">
+                    <p class="mb-0">Select a workspace from the left to view members and collaboration options.</p>
+                </div>
+            }
+            else
+            {
+                <div class="card shadow-sm h-100">
+                    <div class="card-header bg-white d-flex justify-content-between align-items-center py-3">
+                        <div>
+                            <h5 class="mb-0 fw-bold">@selectedWorkspace.Name</h5>
+                            <small class="text-muted">Created: @selectedWorkspace.CreatedAt.ToShortDateString()</small>
+                        </div>
+                        @if (selectedWorkspace.WorkspaceRole == "WorkspaceAdmin")
+                        {
+                            <button class="btn btn-sm btn-outline-primary" @onclick="() => showInviteModal = true">
+                                <i class="bi bi-person-plus-fill me-1"></i> Invite Member
+                            </button>
+                        }
+                    </div>
+
+                    <div class="card-body">
+                        <h6 class="fw-bold mb-3">Active Workspace Members</h6>
+                        @if (workspaceMembers == null)
+                        {
+                            <p class="text-muted"><em>Loading members...</em></p>
+                        }
+                        else
+                        {
+                            <div class="table-responsive">
+                                <table class="table table-sm table-hover align-middle mb-0">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th>Name</th>
+                                            <th>Email</th>
+                                            <th>Role</th>
+                                            <th>Joined</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach (var member in workspaceMembers)
+                                        {
+                                            <tr>
+                                                <td class="fw-semibold">@member.Name</td>
+                                                <td>@member.Email</td>
+                                                <td>
+                                                    <span class="badge @(member.WorkspaceRole == "WorkspaceAdmin" ? "bg-warning text-dark" : "bg-light text-dark border")">
+                                                        @member.WorkspaceRole
+                                                    </span>
+                                                </td>
+                                                <td class="small text-muted">@member.JoinedAt.ToShortDateString()</td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                            </div>
+                        }
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Create Workspace (Admin only) -->
+@if (showCreateModal)
+{
+    <div class="modal fade show d-block" style="background-color: rgba(0,0,0,0.5);">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Create New Workspace</h5>
+                    <button type="button" class="btn-close" @onclick="() => showCreateModal = false"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">Workspace Name</label>
+                        <input type="text" class="form-control" @bind="newWsName" placeholder="e.g. Core API Project" />
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Description</label>
+                        <textarea class="form-control" rows="3" @bind="newWsDescription" placeholder="Project goals, guidelines, or repo details..."></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" @onclick="() => showCreateModal = false">Cancel</button>
+                    <button class="btn btn-primary" @onclick="CreateWorkspace">Create</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+<!-- Modal: Invite Member (WorkspaceAdmin only) -->
+@if (showInviteModal)
+{
+    <div class="modal fade show d-block" style="background-color: rgba(0,0,0,0.5);">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Invite Member to Workspace</h5>
+                    <button type="button" class="btn-close" @onclick="() => showInviteModal = false"></button>
+                </div>
+                <div class="modal-body">
+                    <label class="form-label">Registered User Email</label>
+                    <input type="email" class="form-control" @bind="inviteEmail" placeholder="colleague@domain.com" />
+                    <small class="text-muted">The user must have an existing account on CollabSpace.</small>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" @onclick="() => showInviteModal = false">Cancel</button>
+                    <button class="btn btn-primary" @onclick="SendInvite">Send Invitation</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private List<WorkspaceItem>? myWorkspaces;
+    private WorkspaceItem? selectedWorkspace;
+    private List<MemberItem>? workspaceMembers;
+    private List<InviteItem>? pendingInvites;
+
+    private bool showCreateModal = false;
+    private bool showInviteModal = false;
+    private string newWsName = string.Empty;
+    private string newWsDescription = string.Empty;
+    private string inviteEmail = string.Empty;
+
+    private string? statusMessage;
+    private string? errorMessage;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadInitialData();
+    }
+
+    private async Task LoadInitialData()
+    {
+        try
+        {
+            myWorkspaces = await Http.GetFromJsonAsync<List<WorkspaceItem>>("api/Workspaces/my-workspaces");
+            pendingInvites = await Http.GetFromJsonAsync<List<InviteItem>>("api/Workspaces/invites/my-invites");
+
+            if (myWorkspaces != null && myWorkspaces.Any() && selectedWorkspace == null)
+            {
+                await SelectWorkspace(myWorkspaces.First());
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error loading workspaces: {ex.Message}";
+        }
+    }
+
+    private async Task SelectWorkspace(WorkspaceItem ws)
+    {
+        selectedWorkspace = ws;
+        workspaceMembers = null;
+        try
+        {
+            workspaceMembers = await Http.GetFromJsonAsync<List<MemberItem>>($"api/Workspaces/{ws.Id}/members");
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error loading members: {ex.Message}";
+        }
+    }
+
+    private async Task CreateWorkspace()
+    {
+        statusMessage = null;
+        errorMessage = null;
+
+        var payload = new { Name = newWsName, Description = newWsDescription };
+        var res = await Http.PostAsJsonAsync("api/Workspaces", payload);
+
+        if (res.IsSuccessStatusCode)
+        {
+            statusMessage = "Workspace created successfully.";
+            showCreateModal = false;
+            newWsName = string.Empty;
+            newWsDescription = string.Empty;
+            await LoadInitialData();
+        }
+        else
+        {
+            var err = await res.Content.ReadFromJsonAsync<Dictionary<string, string>>();
+            errorMessage = err != null && err.TryGetValue("message", out var msg) ? msg : "Failed to create workspace.";
+        }
+    }
+
+    private async Task SendInvite()
+    {
+        if (selectedWorkspace == null) return;
+        statusMessage = null;
+        errorMessage = null;
+
+        var payload = new { ReceiverEmail = inviteEmail };
+        var res = await Http.PostAsJsonAsync($"api/Workspaces/{selectedWorkspace.Id}/invite", payload);
+
+        if (res.IsSuccessStatusCode)
+        {
+            statusMessage = $"Invitation successfully sent to {inviteEmail}.";
+            showInviteModal = false;
+            inviteEmail = string.Empty;
+        }
+        else
+        {
+            var err = await res.Content.ReadFromJsonAsync<Dictionary<string, string>>();
+            errorMessage = err != null && err.TryGetValue("message", out var msg) ? msg : "Failed to send invitation.";
+        }
+    }
+
+    private async Task RespondInvite(int inviteId, bool accept)
+    {
+        statusMessage = null;
+        errorMessage = null;
+
+        var res = await Http.PostAsJsonAsync($"api/Workspaces/invites/{inviteId}/respond", new { Accept = accept });
+
+        if (res.IsSuccessStatusCode)
+        {
+            statusMessage = accept ? "Workspace invitation accepted." : "Workspace invitation declined.";
+            await LoadInitialData();
+        }
+        else
+        {
+            errorMessage = "Failed to process invitation.";
+        }
+    }
+
+    // View Model Classes
+    public class WorkspaceItem
+    {
+        public int Id { get; set; }
+        public string Name { get; set; } = string.Empty;
+        public string Description { get; set; } = string.Empty;
+        public string WorkspaceRole { get; set; } = string.Empty;
+        public DateTime CreatedAt { get; set; }
+    }
+
+    public class MemberItem
+    {
+        public string UserId { get; set; } = string.Empty;
+        public string UserName { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
+        public string Email { get; set; } = string.Empty;
+        public string WorkspaceRole { get; set; } = string.Empty;
+        public DateTime JoinedAt { get; set; }
+    }
+
+    public class InviteItem
+    {
+        public int Id { get; set; }
+        public int WorkspaceId { get; set; }
+        public string WorkspaceName { get; set; } = string.Empty;
+        public string WorkspaceDescription { get; set; } = string.Empty;
+        public string SenderName { get; set; } = string.Empty;
+        public DateTime SentAt { get; set; }
+    }
+}
+
+*@
