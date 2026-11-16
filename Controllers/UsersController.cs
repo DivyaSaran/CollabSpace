@@ -2,6 +2,10 @@
 using Microsoft.AspNetCore.Mvc;
 using CollabSpace.Data;
 using Microsoft.EntityFrameworkCore;
+using CollabSpace.DTOs;
+using CollabSpace.Repositories;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
 
 
 namespace CollabSpace.Controllers
@@ -9,69 +13,85 @@ namespace CollabSpace.Controllers
     [Route("api/[controller]")]
     [ApiController]
     [IgnoreAntiforgeryToken]
+    [Authorize(Roles = "Admin")] // Only Admins should manage the overall user directory
     public class UsersController : ControllerBase
     {
-        private readonly ApplicationDbContext _context;
+        private readonly IUserRepository _userRepo;
 
-        public UsersController(ApplicationDbContext context)
+        public UsersController(IUserRepository userRepo)
         {
-            _context = context;
+            _userRepo = userRepo;
         }
 
         // GET: /api/Users?pageNumber=1&pageSize=5
         [HttpGet]
-        public async Task<ActionResult<Pagination<User>>> GetAllUsers([FromQuery] int pageNumber = 1, [FromQuery] int pageSize = 5)
+        public async Task<IActionResult> GetAllUsers([FromQuery] int pageNumber = 1, [FromQuery] int pageSize = 5)
         {
-            // Protect against zero or negative values
             if (pageNumber < 1) pageNumber = 1;
             if (pageSize < 1) pageSize = 5;
-            if (pageSize > 50) pageSize = 50; // Guard against requesting too much data at once
+            if (pageSize > 50) pageSize = 50;
 
-            var query = _context.Users.AsNoTracking();
-            var totalCount = await query.CountAsync();
+            var (users, totalCount) = await _userRepo.GetPagedUsersAsync(pageNumber, pageSize);
 
-            var users = await query
-                .OrderBy(u => u.Id)
-                .Skip((pageNumber - 1) * pageSize) // Fixed: (pageNumber - 1)
-                .Take(pageSize)
-                .ToListAsync();
-
-            return Ok(new Pagination<User>
+            return Ok(new
             {
-                PageNumber = pageNumber,
-                PageSize = pageSize,
-                TotalCount = totalCount,
-                Items = users
+                pageNumber,
+                pageSize,
+                totalCount,
+                items = users
             });
         }
 
-        // GET: /api/Users/entered-guid-id
+        // GET: /api/Users/{id}
         [HttpGet("{id}")]
-        public async Task<ActionResult<User>> GetUserById(string id)
+        public async Task<IActionResult> GetUserById(string id)
         {
-            // Notice id is now a string to match IdentityUser.Id
-            var user = await _context.Users.FindAsync(id);
-
+            var user = await _userRepo.GetUserByIdAsync(id);
             if (user == null)
             {
-                return NotFound(new { message = $"User with ID {id} was not found." });
+                return NotFound(new { message = $"User with ID '{id}' was not found." });
             }
 
             return Ok(user);
         }
 
-        // DELETE: /api/Users/entered-guid-id
+        // POST: /api/Users
+        [HttpPost]
+        public async Task<IActionResult> CreateUser([FromBody] UserCreateUpdateDto dto)
+        {
+            var result = await _userRepo.CreateUserAsync(dto);
+            if (!result.Succeeded)
+            {
+                return BadRequest(new { errors = result.Errors });
+            }
+
+            return Ok(new { message = "User created successfully." });
+        }
+
+        // PUT: /api/Users/{id}
+        [HttpPut("{id}")]
+        public async Task<IActionResult> UpdateUser(string id, [FromBody] UserCreateUpdateDto dto)
+        {
+            dto.Id = id;
+            var result = await _userRepo.UpdateUserAsync(dto);
+            if (!result.Succeeded)
+            {
+                return BadRequest(new { errors = result.Errors });
+            }
+
+            return Ok(new { message = "User updated successfully." });
+        }
+
+        // DELETE: /api/Users/{id}
         [HttpDelete("{id}")]
         public async Task<IActionResult> DeleteUser(string id)
         {
-            var user = await _context.Users.FindAsync(id);
-            if (user == null)
+            var result = await _userRepo.DeleteUserAsync(id);
+            if (!result.Succeeded)
             {
-                return NotFound(new { message = $"User with ID {id} was not found." });
+                return BadRequest(new { errors = result.Errors });
             }
 
-            _context.Users.Remove(user);
-            await _context.SaveChangesAsync();
             return NoContent();
         }
     }

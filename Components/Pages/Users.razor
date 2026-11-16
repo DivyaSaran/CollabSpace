@@ -1,12 +1,9 @@
 ﻿@page "/users"
 @attribute [Authorize(Roles = "Admin")]
-@using CollabSpace.Data
-@using CollabSpace.Models
+@using CollabSpace.DTOs
+@using CollabSpace.Repositories
 @using Microsoft.AspNetCore.Authorization
-@using Microsoft.AspNetCore.Identity
-@using Microsoft.EntityFrameworkCore
-@inject UserManager<User> UserManager
-@inject ApplicationDbContext DbContext
+@inject IUserRepository UserRepo
 
 <PageTitle>CollabSpace Users</PageTitle>
 
@@ -54,6 +51,7 @@
                             <th>Username</th>
                             <th>Name</th>
                             <th>Email</th>
+                            <th>Role(s)</th>
                             <th class="text-center" style="width: 180px;">Actions</th>
                         </tr>
                     </thead>
@@ -64,6 +62,14 @@
                                 <td class="fw-semibold">@user.UserName</td>
                                 <td>@user.Name</td>
                                 <td>@user.Email</td>
+                                <td>
+                                    @foreach (var r in user.Roles)
+                                    {
+                                        <span class="badge @(r == "Admin" ? "bg-warning text-dark" : "bg-secondary") me-1">
+                                            @r
+                                        </span>
+                                    }
+                                </td>
                                 <td class="text-center">
                                     <button class="btn btn-sm btn-outline-primary me-1" @onclick="() => OpenEditModal(user)">
                                         Edit
@@ -135,6 +141,16 @@
                             <label class="form-label">Password @(isEditing ? "(Leave blank to keep current password)" : "")</label>
                             <InputText class="form-control" type="password" @bind-Value="userForm.Password" required="@(!isEditing)" />
                         </div>
+                        @if (!isEditing)
+                        {
+                            <div class="mb-3">
+                                <label class="form-label">Initial Role</label>
+                                <InputSelect class="form-select" @bind-Value="userForm.Role">
+                                    <option value="Member">Member</option>
+                                    <option value="Admin">Admin</option>
+                                </InputSelect>
+                            </div>
+                        }
                     </div>
                     <div class="modal-footer">
                         <button type="button" class="btn btn-secondary" @onclick="CloseModal">Cancel</button>
@@ -147,9 +163,9 @@
 }
 
 @code {
-    private List<User>? users;
-    private UserFormModel userForm = new();
-    private string? errorMessage;    
+    private List<UserDto>? users;
+    private UserCreateUpdateDto userForm = new();
+    private string? errorMessage;
     private string? statusMessage;
     private bool isModalOpen = false;
     private bool isEditing = false;
@@ -164,18 +180,13 @@
     }
 
     private async Task LoadAllUsers()
-    {        
+    {
         try
         {
-            totalCount = await DbContext.Users.CountAsync();
+            var result = await UserRepo.GetPagedUsersAsync(currentPage, pageSize);
+            users = result.Users.ToList();
+            totalCount = result.TotalCount;
             totalPages = (int)Math.Ceiling(totalCount / (double)pageSize);
-
-            users = await DbContext.Users
-                .AsNoTracking()
-                .OrderBy(u => u.UserName)
-                .Skip((currentPage - 1) * pageSize)
-                .Take(pageSize)
-                .ToListAsync();
         }
         catch (Exception ex)
         {
@@ -192,19 +203,19 @@
 
     private void OpenCreateModal()
     {
-        userForm = new UserFormModel();
+        userForm = new UserCreateUpdateDto();
         isEditing = false;
         isModalOpen = true;
     }
 
-    private void OpenEditModal(User user)
+    private void OpenEditModal(UserDto user)
     {
-        userForm = new UserFormModel
+        userForm = new UserCreateUpdateDto
         {
             Id = user.Id,
-            UserName = user.UserName ?? string.Empty,
+            UserName = user.UserName,
             Name = user.Name,
-            Email = user.Email ?? string.Empty,
+            Email = user.Email,
             Password = string.Empty
         };
         isEditing = true;
@@ -224,58 +235,32 @@
 
         try
         {
+            IdentityResultStatus result;
             if (isEditing)
             {
-                var existingUser = await UserManager.FindByIdAsync(userForm.Id!);
-                if (existingUser == null)
+                result = await UserRepo.UpdateUserAsync(userForm);
+                if (result.Succeeded)
                 {
-                    errorMessage = "User not found.";
+                    statusMessage = "User updated successfully!";
+                }
+                else
+                {
+                    errorMessage = string.Join(", ", result.Errors);
                     return;
                 }
-
-                existingUser.UserName = userForm.UserName;
-                existingUser.Name = userForm.Name;
-                existingUser.Email = userForm.Email;
-
-                var updateResult = await UserManager.UpdateAsync(existingUser);
-                if (!updateResult.Succeeded)
-                {
-                    errorMessage = string.Join(", ", updateResult.Errors.Select(e => e.Description));
-                    return;
-                }
-
-                // If password was entered, update it
-                if (!string.IsNullOrWhiteSpace(userForm.Password))
-                {
-                    var token = await UserManager.GeneratePasswordResetTokenAsync(existingUser);
-                    var resetResult = await UserManager.ResetPasswordAsync(existingUser, token, userForm.Password);
-                    if (!resetResult.Succeeded)
-                    {
-                        errorMessage = string.Join(", ", resetResult.Errors.Select(e => e.Description));
-                        return;
-                    }
-                }
-
-                statusMessage = "User updated successfully!";
             }
             else
             {
-                var newUser = new User
+                result = await UserRepo.CreateUserAsync(userForm);
+                if (result.Succeeded)
                 {
-                    UserName = userForm.UserName,
-                    Name = userForm.Name,
-                    Email = userForm.Email
-                };
-
-                var createResult = await UserManager.CreateAsync(newUser, userForm.Password!);
-                if (!createResult.Succeeded)
+                    statusMessage = "User created successfully!";
+                }
+                else
                 {
-                    errorMessage = string.Join(", ", createResult.Errors.Select(e => e.Description));
+                    errorMessage = string.Join(", ", result.Errors);
                     return;
                 }
-
-                await UserManager.AddToRoleAsync(newUser, "Member");
-                statusMessage = "User created successfully!";
             }
 
             CloseModal();
@@ -294,19 +279,15 @@
 
         try
         {
-            var user = await UserManager.FindByIdAsync(id);
-            if (user != null)
+            var result = await UserRepo.DeleteUserAsync(id);
+            if (result.Succeeded)
             {
-                var result = await UserManager.DeleteAsync(user);
-                if (result.Succeeded)
-                {
-                    statusMessage = "User deleted successfully!";
-                    await LoadAllUsers();
-                }
-                else
-                {
-                    errorMessage = string.Join(", ", result.Errors.Select(e => e.Description));
-                }
+                statusMessage = "User deleted successfully!";
+                await LoadAllUsers();
+            }
+            else
+            {
+                errorMessage = string.Join(", ", result.Errors);
             }
         }
         catch (Exception ex)
@@ -314,16 +295,4 @@
             errorMessage = $"Failed to delete user: {ex.Message}";
         }
     }
-
-    public class UserFormModel
-    {
-        public string? Id { get; set; }
-        public string UserName { get; set; } = string.Empty;
-        public string Name { get; set; } = string.Empty;
-        public string Email { get; set; } = string.Empty;
-        public string? Password { get; set; }
-    }
 }
-
-
-

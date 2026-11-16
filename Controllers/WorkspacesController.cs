@@ -1,9 +1,11 @@
 ﻿using System.Security.Claims;
-using CollabSpace.Data;
+using CollabSpace.DTOs;
 using CollabSpace.Models;
+using CollabSpace.Repositories;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
+using CollabSpace.Data;
 using Microsoft.EntityFrameworkCore;
 
 namespace CollabSpace.Controllers
@@ -13,46 +15,57 @@ namespace CollabSpace.Controllers
     [Authorize] // Requires the user to be signed in
     public class WorkspacesController : ControllerBase
     {
-        private readonly ApplicationDbContext _context;
+        private readonly IWorkspaceRepository _workspaceRepo;
         private readonly UserManager<User> _userManager;
 
-        public WorkspacesController(ApplicationDbContext context, UserManager<User> userManager)
+        public WorkspacesController(
+            IWorkspaceRepository workspaceRepo,
+            UserManager<User> userManager)
         {
-            _context = context;
+            _workspaceRepo = workspaceRepo;
             _userManager = userManager;
         }
 
-        // Helper: retrieve the currently logged-in user's GUID ID
         private string GetCurrentUserId() =>
             User.FindFirstValue(ClaimTypes.NameIdentifier) ?? string.Empty;
 
+        private bool IsGlobalAdmin() =>
+            User.IsInRole("Admin");
+
+        // ---------------------------------------------------------------------
+        // Workspace Retrieval & Creation
+        // ---------------------------------------------------------------------
+
         // GET: /api/Workspaces/my-workspaces
-        // Returns all workspaces the logged-in user belongs to
         [HttpGet("my-workspaces")]
         public async Task<IActionResult> GetMyWorkspaces()
         {
             var userId = GetCurrentUserId();
 
-            var workspaces = await _context.WorkspaceMembers
-                .Where(wm => wm.UserId == userId)
-                .Select(wm => new
-                {
-                    wm.Workspace.Id,
-                    wm.Workspace.Name,
-                    wm.Workspace.Description,
-                    wm.WorkspaceRole,
-                    wm.Workspace.CreatedAt
-                })
-                .ToListAsync();
+            if (IsGlobalAdmin())
+            {
+                var allWorkspaces = await _workspaceRepo.GetAllWorkspacesAsync(userId);
+                return Ok(allWorkspaces);
+            }
 
+            var workspaces = await _workspaceRepo.GetUserWorkspacesAsync(userId);
             return Ok(workspaces);
         }
 
-        // POST: /api/Workspaces
-        // Creates a new workspace (Admin only) 
-        [HttpPost]
+        // GET: /api/Workspaces/all
+        [HttpGet("all")]
         [Authorize(Roles = "Admin")]
-        public async Task<IActionResult> CreateWorkspace([FromBody] CreateWorkspaceDto dto)
+        public async Task<IActionResult> GetAllWorkspaces()
+        {
+            var userId = GetCurrentUserId();
+            var allWorkspaces = await _workspaceRepo.GetAllWorkspacesAsync(userId);
+            return Ok(allWorkspaces);
+        }
+
+        // POST: /api/Workspaces
+        // Any member can create a workspace and becomes its WorkspaceManager
+        [HttpPost]
+        public async Task<IActionResult> CreateWorkspace([FromBody] WorkspaceCreateDto dto)
         {
             if (string.IsNullOrWhiteSpace(dto.Name))
             {
@@ -60,196 +73,182 @@ namespace CollabSpace.Controllers
             }
 
             var userId = GetCurrentUserId();
+            var created = await _workspaceRepo.CreateWorkspaceAsync(dto, userId);
 
-            var workspace = new Workspace
-            {
-                Name = dto.Name,
-                Description = dto.Description,
-                OwnerId = userId
-            };
-
-            _context.Workspaces.Add(workspace);
-            await _context.SaveChangesAsync();
-
-            // Automatically register the creator as WorkspaceAdmin
-            var membership = new WorkspaceMember
-            {
-                WorkspaceId = workspace.Id,
-                UserId = userId,
-                WorkspaceRole = "WorkspaceAdmin"
-            };
-
-            _context.WorkspaceMembers.Add(membership);
-            await _context.SaveChangesAsync();
-
-            return Ok(new { message = "Workspace created successfully.", workspace.Id });
+            return Ok(new { message = "Workspace created successfully.", id = created.Id });
         }
 
         // GET: /api/Workspaces/{workspaceId}/members
-        // View all members in a given workspace
         [HttpGet("{workspaceId}/members")]
         public async Task<IActionResult> GetWorkspaceMembers(int workspaceId)
         {
             var userId = GetCurrentUserId();
+            var role = await _workspaceRepo.GetMemberRoleAsync(workspaceId, userId);
 
-            // Ensure the requesting user is a member of the workspace
-            var isMember = await _context.WorkspaceMembers
-                .AnyAsync(wm => wm.WorkspaceId == workspaceId && wm.UserId == userId);
-
-            if (!isMember)
+            if (role == null && !IsGlobalAdmin())
             {
                 return Forbid();
             }
 
-            var members = await _context.WorkspaceMembers
-                .Where(wm => wm.WorkspaceId == workspaceId)
-                .Select(wm => new
-                {
-                    wm.UserId,
-                    wm.User.UserName,
-                    wm.User.Name,
-                    wm.User.Email,
-                    wm.WorkspaceRole,
-                    wm.JoinedAt
-                })
-                .ToListAsync();
-
+            var members = await _workspaceRepo.GetMembersAsync(workspaceId);
             return Ok(members);
         }
 
+        // ---------------------------------------------------------------------
+        // Existing Feature Intact: Outbound Invitations
+        // Admin can invite to ANY workspace; WorkspaceManager can invite to theirs
+        // ---------------------------------------------------------------------
+
         // POST: /api/Workspaces/{workspaceId}/invite
-        // Admin sends an invitation to another user via email
         [HttpPost("{workspaceId}/invite")]
         public async Task<IActionResult> SendInvite(int workspaceId, [FromBody] SendInviteDto dto)
         {
+            if (string.IsNullOrWhiteSpace(dto.ReceiverEmail))
+            {
+                return BadRequest(new { message = "Receiver email is required." });
+            }
+
             var senderId = GetCurrentUserId();
+            var (succeeded, message) = await _workspaceRepo.SendInviteAsync(
+                workspaceId,
+                senderId,
+                dto.ReceiverEmail.Trim(),
+                IsGlobalAdmin());
 
-            // 1. Verify the sender is a WorkspaceAdmin for this workspace
-            var senderMembership = await _context.WorkspaceMembers
-                .FirstOrDefaultAsync(wm => wm.WorkspaceId == workspaceId && wm.UserId == senderId);
-
-            if (senderMembership == null || senderMembership.WorkspaceRole != "WorkspaceAdmin")
+            if (!succeeded)
             {
-                return Forbid();
+                return BadRequest(new { message });
             }
 
-            // 2. Find the user to invite by email
-            var receiverUser = await _userManager.FindByEmailAsync(dto.ReceiverEmail);
-            if (receiverUser == null)
-            {
-                return NotFound(new { message = $"No user found with email '{dto.ReceiverEmail}'." });
-            }
-
-            // 3. Check if the user is already a member
-            var alreadyMember = await _context.WorkspaceMembers
-                .AnyAsync(wm => wm.WorkspaceId == workspaceId && wm.UserId == receiverUser.Id);
-
-            if (alreadyMember)
-            {
-                return Conflict(new { message = "This user is already a member of this workspace." });
-            }
-
-            // 4. Check if a pending invite already exists
-            var pendingInvite = await _context.WorkspaceInvites
-                .AnyAsync(wi => wi.WorkspaceId == workspaceId && wi.ReceiverUserId == receiverUser.Id && wi.Status == "Pending");
-
-            if (pendingInvite)
-            {
-                return Conflict(new { message = "An invitation is already pending for this user." });
-            }
-
-            // 5. Create the invite
-            var invite = new WorkspaceInvite
-            {
-                WorkspaceId = workspaceId,
-                SenderUserId = senderId,
-                ReceiverUserId = receiverUser.Id,
-                Status = "Pending"
-            };
-
-            _context.WorkspaceInvites.Add(invite);
-            await _context.SaveChangesAsync();
-
-            return Ok(new { message = $"Invitation sent to {dto.ReceiverEmail}." });
+            return Ok(new { message });
         }
 
         // GET: /api/Workspaces/invites/my-invites
-        // Returns all pending invites for the logged-in user
         [HttpGet("invites/my-invites")]
         public async Task<IActionResult> GetMyPendingInvites()
         {
             var userId = GetCurrentUserId();
-
-            var invites = await _context.WorkspaceInvites
-                .Where(wi => wi.ReceiverUserId == userId && wi.Status == "Pending")
-                .Select(wi => new
-                {
-                    wi.Id,
-                    wi.WorkspaceId,
-                    WorkspaceName = wi.Workspace.Name,
-                    WorkspaceDescription = wi.Workspace.Description,
-                    SenderName = wi.SenderUser.Name,
-                    wi.SentAt
-                })
-                .ToListAsync();
-
+            var invites = await _workspaceRepo.GetUserPendingInvitesAsync(userId);
             return Ok(invites);
         }
 
         // POST: /api/Workspaces/invites/{inviteId}/respond
-        // Accept or decline an invitation
         [HttpPost("invites/{inviteId}/respond")]
         public async Task<IActionResult> RespondToInvite(int inviteId, [FromBody] RespondInviteDto dto)
         {
             var userId = GetCurrentUserId();
+            var (succeeded, message) = await _workspaceRepo.RespondToInviteAsync(inviteId, userId, dto.Accept);
 
-            var invite = await _context.WorkspaceInvites
-                .FirstOrDefaultAsync(wi => wi.Id == inviteId && wi.ReceiverUserId == userId && wi.Status == "Pending");
-
-            if (invite == null)
+            if (!succeeded)
             {
-                return NotFound(new { message = "Invitation not found or already processed." });
+                return BadRequest(new { message });
             }
 
-            if (dto.Accept)
-            {
-                invite.Status = "Accepted";
+            return Ok(new { message });
+        }
 
-                // Add user to the workspace members list
-                var membership = new WorkspaceMember
+        // ---------------------------------------------------------------------
+        // New Feature: Inbound Access Requests & Approvals
+        // ---------------------------------------------------------------------
+
+        // POST: /api/Workspaces/{workspaceId}/request-access
+        [HttpPost("{workspaceId}/request-access")]
+        public async Task<IActionResult> RequestAccess(int workspaceId)
+        {
+            var userId = GetCurrentUserId();
+            var (succeeded, message) = await _workspaceRepo.RequestWorkspaceAccessAsync(workspaceId, userId);
+
+            if (!succeeded)
+            {
+                return BadRequest(new { message });
+            }
+
+            return Ok(new { message });
+        }
+
+        // GET: /api/Workspaces/{workspaceId}/access-requests
+        [HttpGet("{workspaceId}/access-requests")]
+        public async Task<IActionResult> GetPendingRequests(int workspaceId)
+        {
+            var userId = GetCurrentUserId();
+            var role = await _workspaceRepo.GetMemberRoleAsync(workspaceId, userId);
+
+            if (role != "WorkspaceManager" && !IsGlobalAdmin())
+            {
+                return Forbid();
+            }
+
+            var requests = await _workspaceRepo.GetPendingAccessRequestsForWorkspaceAsync(workspaceId);
+            return Ok(requests);
+        }
+
+        // POST: /api/Workspaces/access-requests/{requestId}/review
+        [HttpPost("access-requests/{requestId}/review")]
+        public async Task<IActionResult> ReviewAccessRequest(int requestId, [FromBody] ReviewRequestDto dto)
+        {
+            var reviewerId = GetCurrentUserId();
+            var (succeeded, message) = await _workspaceRepo.ReviewAccessRequestAsync(requestId, reviewerId, dto.Approve);
+
+            if (!succeeded)
+            {
+                return BadRequest(new { message });
+            }
+
+            return Ok(new { message });
+        }
+
+        // ---------------------------------------------------------------------
+        // Requirement 2: Granular Member Removal Enforcement
+        // "Admins cannot delete other members' workspace users"
+        // ---------------------------------------------------------------------
+
+        // DELETE: /api/Workspaces/{workspaceId}/members/{targetUserId}
+        [HttpDelete("{workspaceId}/members/{targetUserId}")]
+        public async Task<IActionResult> RemoveMember(int workspaceId, string targetUserId)
+        {
+            var currentUserId = GetCurrentUserId();
+            var workspace = await _workspaceRepo.GetByIdAsync(workspaceId);
+
+            if (workspace == null)
+            {
+                return NotFound(new { message = "Workspace not found." });
+            }
+
+            var currentRole = await _workspaceRepo.GetMemberRoleAsync(workspaceId, currentUserId);
+            var isOwnerOrManager = currentRole == "WorkspaceManager" || workspace.OwnerId == currentUserId;
+
+            if (!isOwnerOrManager)
+            {
+                if (IsGlobalAdmin() && workspace.OwnerId != currentUserId)
                 {
-                    WorkspaceId = invite.WorkspaceId,
-                    UserId = userId,
-                    WorkspaceRole = "Member"
-                };
+                    return StatusCode(StatusCodes.Status403Forbidden, new
+                    {
+                        message = "Global Admins cannot remove members from workspaces owned by other users."
+                    });
+                }
 
-                _context.WorkspaceMembers.Add(membership);
+                return Forbid();
             }
-            else
+
+            var removed = await _workspaceRepo.RemoveMemberAsync(workspaceId, targetUserId);
+            if (!removed)
             {
-                invite.Status = "Declined";
+                return BadRequest(new { message = "Could not remove member from this workspace." });
             }
 
-            await _context.SaveChangesAsync();
-
-            return Ok(new { message = dto.Accept ? "Invitation accepted!" : "Invitation declined." });
+            return Ok(new { message = "Member removed successfully." });
         }
     }
 
-    // DTO Classes
-    public class CreateWorkspaceDto
+    public class ReviewRequestDto
     {
-        public string Name { get; set; } = string.Empty;
-        public string Description { get; set; } = string.Empty;
-    }
-
-    public class SendInviteDto
-    {
-        public string ReceiverEmail { get; set; } = string.Empty;
-    }
-
-    public class RespondInviteDto
-    {
-        public bool Accept { get; set; }
+        public bool Approve { get; set; }
     }
 }
+
+
+
+
+
+
+

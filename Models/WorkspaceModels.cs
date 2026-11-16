@@ -45,4 +45,23 @@
         public string Status { get; set; } = "Pending";
         public DateTime SentAt { get; set; } = DateTime.UtcNow;
     }
+
+    public class WorkspaceAccessRequest
+    {
+        public int Id { get; set; }
+
+        public int WorkspaceId { get; set; }
+        public Workspace Workspace { get; set; } = null!;
+
+        // The user requesting access
+        public string RequesterUserId { get; set; } = string.Empty;
+        public User RequesterUser { get; set; } = null!;
+
+        // "Pending", "Approved", "Rejected"
+        public string Status { get; set; } = "Pending";
+
+        public DateTime RequestedAt { get; set; } = DateTime.UtcNow;
+        public DateTime? ReviewedAt { get; set; }
+        public string? ReviewedByUserId { get; set; }
+    }
 }

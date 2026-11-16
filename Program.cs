@@ -1,6 +1,8 @@
 using CollabSpace.Components;
 using CollabSpace.Data;
 using CollabSpace.Models;
+using CollabSpace.Repositories;
+using CollabSpace.Services;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 
@@ -23,7 +25,21 @@ builder.Services.AddScoped(sp => new HttpClient
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
 
-// 5. Register ASP.NET Core Identity with production security rules
+// Middle-layer repository registrations
+builder.Services.AddScoped<IWorkspaceRepository, WorkspaceRepository>();
+builder.Services.AddScoped<IUserRepository, UserRepository>();
+builder.Services.AddScoped<IRoleRepository, RoleRepository>();
+builder.Services.AddHttpClient<IGitRepositoryService, GitRepositoryService>();
+
+// Register AutoMapper (version 16+ the built-in AddAutoMapper extension method
+// on IServiceCollection expects an action configuration callback rather than
+// typeof(...) directly) and scan the assembly containing MappingProfile
+builder.Services.AddAutoMapper(cfg =>
+{
+    cfg.AddProfile<CollabSpace.Mappings.MappingProfile>();
+});
+
+//  Register ASP.NET Core Identity with production security rules
 builder.Services.AddIdentity<User, IdentityRole>(options =>
 {
     // Password strength settings
@@ -42,7 +58,7 @@ builder.Services.AddIdentity<User, IdentityRole>(options =>
 .AddEntityFrameworkStores<ApplicationDbContext>()
 .AddDefaultTokenProviders();
 
-// 6. Cookie configuration
+//  Cookie configuration
 builder.Services.ConfigureApplicationCookie(options =>
 {
     options.Cookie.Name = "CollabSpace.Auth";
@@ -51,7 +67,7 @@ builder.Services.ConfigureApplicationCookie(options =>
     options.ExpireTimeSpan = TimeSpan.FromHours(8);
 });
 
-// 7. Blazor authentication state cascaded to all components
+//  Blazor authentication state cascaded to all components
 builder.Services.AddCascadingAuthenticationState();
 
 var app = builder.Build();

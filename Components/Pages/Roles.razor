@@ -1,0 +1,308 @@
+﻿@page "/roles"
+@attribute [Authorize(Roles = "Admin")]
+@using CollabSpace.DTOs
+@using CollabSpace.Repositories
+@inject IRoleRepository RoleRepo
+
+<PageTitle>CollabSpace - Role Management</PageTitle>
+
+<div class="container mt-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h2 class="fw-bold mb-0">Role Management</h2>
+            <p class="text-muted small mb-0">Create application roles and manage user permission assignments.</p>
+        </div>
+        <button class="btn btn-primary" @onclick="() => showCreateModal = true">
+            <i class="bi bi-shield-plus me-1"></i> Create Role
+        </button>
+    </div>
+
+    @if (!string.IsNullOrEmpty(statusMessage))
+    {
+        <div class="alert alert-success alert-dismissible fade show" role="alert">
+            @statusMessage
+            <button type="button" class="btn-close" @onclick="() => statusMessage = null"></button>
+        </div>
+    }
+
+    @if (!string.IsNullOrEmpty(errorMessage))
+    {
+        <div class="alert alert-danger alert-dismissible fade show" role="alert">
+            @errorMessage
+            <button type="button" class="btn-close" @onclick="() => errorMessage = null"></button>
+        </div>
+    }
+
+    <div class="row">
+        <!-- Roles List Card -->
+        <div class="col-md-4 mb-4">
+            <div class="card shadow-sm h-100">
+                <div class="card-header bg-dark text-white fw-semibold">
+                    System Roles
+                </div>
+                <div class="card-body p-0">
+                    @if (roles == null)
+                    {
+                        <div class="p-3 text-muted"><em>Loading roles...</em></div>
+                    }
+                    else
+                    {
+                        <ul class="list-group list-group-flush">
+                            @foreach (var r in roles)
+                            {
+                                <li class="list-group-item d-flex justify-content-between align-items-center py-3">
+                                    <div>
+                                        <h6 class="mb-0 fw-bold">@r.Name</h6>
+                                        <small class="text-muted">@r.UserCount user(s) assigned</small>
+                                    </div>
+                                    @if (r.Name != "Admin" && r.Name != "Member")
+                                    {
+                                        <button class="btn btn-sm btn-outline-danger" @onclick="() => DeleteRole(r.Name)">
+                                            Delete
+                                        </button>
+                                    }
+                                    else
+                                    {
+                                        <span class="badge bg-secondary">System Role</span>
+                                    }
+                                </li>
+                            }
+                        </ul>
+                    }
+                </div>
+            </div>
+        </div>
+
+        <!-- User Role Assignments Table -->
+        <div class="col-md-8 mb-4">
+            <div class="card shadow-sm h-100">
+                <div class="card-header bg-white fw-semibold">
+                    User Role Assignments
+                </div>
+                <div class="card-body p-0">
+                    @if (userAssignments == null)
+                    {
+                        <div class="p-3 text-muted"><em>Loading user assignments...</em></div>
+                    }
+                    else
+                    {
+                        <div class="table-responsive">
+                            <table class="table table-hover align-middle mb-0">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th>User</th>
+                                        <th>Email</th>
+                                        <th>Assigned Roles</th>
+                                        <th class="text-end">Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var user in userAssignments)
+                                    {
+                                        <tr>
+                                            <td class="fw-semibold">@user.Name</td>
+                                            <td>@user.Email</td>
+                                            <td>
+                                                @foreach (var roleName in user.AssignedRoles)
+                                                {
+                                                    <span class="badge @(roleName == "Admin" ? "bg-warning text-dark" : "bg-primary") me-1">
+                                                        @roleName
+                                                    </span>
+                                                }
+                                            </td>
+                                            <td class="text-end">
+                                                <button class="btn btn-sm btn-outline-primary" @onclick="() => OpenEditRolesModal(user)">
+                                                    Manage Roles
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Create New Role -->
+@if (showCreateModal)
+{
+    <div class="modal fade show d-block" style="background-color: rgba(0,0,0,0.5);">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Create New Role</h5>
+                    <button type="button" class="btn-close" @onclick="() => showCreateModal = false"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">Role Name</label>
+                        <input type="text" class="form-control" @bind="newRoleName" placeholder="e.g. Auditor, Moderator" />
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" @onclick="() => showCreateModal = false">Cancel</button>
+                    <button class="btn btn-primary" @onclick="CreateRole">Create Role</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+<!-- Modal: Edit User Roles -->
+@if (showEditModal && editingUser != null)
+{
+    <div class="modal fade show d-block" style="background-color: rgba(0,0,0,0.5);">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Manage Roles for @editingUser.Name</h5>
+                    <button type="button" class="btn-close" @onclick="CloseEditModal"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="text-muted small">Select the roles to grant or revoke for this account:</p>
+                    @if (roles != null)
+                    {
+                        @foreach (var role in roles)
+                        {
+                            var isChecked = selectedRolesForEdit.Contains(role.Name);
+                            <div class="form-check mb-2">
+                                <input class="form-check-input" type="checkbox" id="@role.Name" checked="@isChecked"
+                                       @onchange="(e) => ToggleRoleSelection(role.Name, e.Value)">
+                                <label class="form-check-label fw-semibold" for="@role.Name">
+                                    @role.Name
+                                </label>
+                            </div>
+                        }
+                    }
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" @onclick="CloseEditModal">Cancel</button>
+                    <button class="btn btn-primary" @onclick="SaveUserRoles">Save Assignments</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private List<RoleDto>? roles;
+    private List<UserRoleAssignmentDto>? userAssignments;
+    private bool showCreateModal = false;
+    private bool showEditModal = false;
+    private string newRoleName = string.Empty;
+    private UserRoleAssignmentDto? editingUser;
+    private HashSet<string> selectedRolesForEdit = new();
+
+    private string? statusMessage;
+    private string? errorMessage;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadData();
+    }
+
+    private async Task LoadData()
+    {
+        try
+        {
+            var roleList = await RoleRepo.GetAllRolesAsync();
+            roles = roleList.ToList();
+
+            var assignmentList = await RoleRepo.GetUsersWithRolesAsync();
+            userAssignments = assignmentList.ToList();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error loading role data: {ex.Message}";
+        }
+    }
+
+    private async Task CreateRole()
+    {
+        if (string.IsNullOrWhiteSpace(newRoleName)) return;
+
+        statusMessage = null;
+        errorMessage = null;
+
+        var (succeeded, msg) = await RoleRepo.CreateRoleAsync(newRoleName);
+        if (succeeded)
+        {
+            statusMessage = msg;
+            showCreateModal = false;
+            newRoleName = string.Empty;
+            await LoadData();
+        }
+        else
+        {
+            errorMessage = msg;
+        }
+    }
+
+    private async Task DeleteRole(string roleName)
+    {
+        statusMessage = null;
+        errorMessage = null;
+
+        var (succeeded, msg) = await RoleRepo.DeleteRoleAsync(roleName);
+        if (succeeded)
+        {
+            statusMessage = msg;
+            await LoadData();
+        }
+        else
+        {
+            errorMessage = msg;
+        }
+    }
+
+    private void OpenEditRolesModal(UserRoleAssignmentDto user)
+    {
+        editingUser = user;
+        selectedRolesForEdit = new HashSet<string>(user.AssignedRoles);
+        showEditModal = true;
+    }
+
+    private void CloseEditModal()
+    {
+        showEditModal = false;
+        editingUser = null;
+        selectedRolesForEdit.Clear();
+    }
+
+    private void ToggleRoleSelection(string roleName, object? checkedValue)
+    {
+        var isChecked = checkedValue is bool b && b;
+        if (isChecked)
+        {
+            selectedRolesForEdit.Add(roleName);
+        }
+        else
+        {
+            selectedRolesForEdit.Remove(roleName);
+        }
+    }
+
+    private async Task SaveUserRoles()
+    {
+        if (editingUser == null) return;
+
+        statusMessage = null;
+        errorMessage = null;
+
+        var (succeeded, msg) = await RoleRepo.AssignUserRolesAsync(editingUser.UserId, selectedRolesForEdit);
+        if (succeeded)
+        {
+            statusMessage = msg;
+            CloseEditModal();
+            await LoadData();
+        }
+        else
+        {
+            errorMessage = msg;
+        }
+    }
+}

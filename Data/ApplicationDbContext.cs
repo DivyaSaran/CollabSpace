@@ -15,7 +15,7 @@ namespace CollabSpace.Data
         public DbSet<Workspace> Workspaces => Set<Workspace>();
         public DbSet<WorkspaceMember> WorkspaceMembers => Set<WorkspaceMember>();
         public DbSet<WorkspaceInvite> WorkspaceInvites => Set<WorkspaceInvite>();
-
+         public DbSet<WorkspaceAccessRequest> WorkspaceAccessRequests => Set<WorkspaceAccessRequest>();
         protected override void OnModelCreating(ModelBuilder builder)
         {
             // Note :::: CRITICAL: Always call base.OnModelCreating first.
@@ -55,8 +55,22 @@ namespace CollabSpace.Data
                 .WithMany()
                 .HasForeignKey(wi => wi.SenderUserId)
                 .OnDelete(DeleteBehavior.Restrict);
+
+            // Configure WorkspaceAccessRequest relationships
+
+            builder.Entity<WorkspaceAccessRequest>()
+                .HasOne(ar => ar.Workspace)
+                .WithMany()
+                .HasForeignKey(ar => ar.WorkspaceId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            builder.Entity<WorkspaceAccessRequest>()
+                .HasOne(ar => ar.RequesterUser)
+                .WithMany()
+                .HasForeignKey(ar => ar.RequesterUserId)
+                .OnDelete(DeleteBehavior.Restrict);
         }
-    
+
     }
 }
 

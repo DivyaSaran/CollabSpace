@@ -1,31 +1,25 @@
 ﻿@page "/workspaces"
 @attribute [Authorize]
 @using System.Security.Claims
-@using CollabSpace.Data
-@using CollabSpace.Models
+@using CollabSpace.DTOs
+@using CollabSpace.Repositories
 @using Microsoft.AspNetCore.Components.Authorization
-@using Microsoft.AspNetCore.Identity
-@using Microsoft.EntityFrameworkCore
 @inject AuthenticationStateProvider AuthStateProvider
-@inject ApplicationDbContext DbContext
-@inject UserManager<User> UserManager
+@inject IWorkspaceRepository WorkspaceRepo
+@inject CollabSpace.Services.IGitRepositoryService GitService
 
 <PageTitle>CollabSpace - Workspaces</PageTitle>
 
 <div class="container mt-4">
-    <!-- Header with Admin Action -->
+    <!-- Header: Any user can create a workspace -->
     <div class="d-flex justify-content-between align-items-center mb-4">
         <div>
             <h2 class="fw-bold mb-0">Collaboration Workspaces</h2>
-            <p class="text-muted small mb-0">Manage shared team environments and active collaborations.</p>
+            <p class="text-muted small mb-0">Manage shared team environments, invites, and membership requests.</p>
         </div>
-        <AuthorizeView Roles="Admin">
-            <Authorized>
-                <button class="btn btn-primary" @onclick="() => showCreateModal = true">
-                    <i class="bi bi-plus-lg"></i> Create Workspace
-                </button>
-            </Authorized>
-        </AuthorizeView>
+        <button class="btn btn-primary" @onclick="() => showCreateModal = true">
+            <i class="bi bi-plus-lg"></i> Create Workspace
+        </button>
     </div>
 
     <!-- Feedback Alerts -->
@@ -45,16 +39,16 @@
         </div>
     }
 
-    <!-- Pending Invitations Section -->
-    @if (pendingInvites != null && pendingInvites.Any())
+    <!-- 1. Pending Outbound Invitations Received by User -->
+    @if (myInvites != null && myInvites.Any())
     {
         <div class="card border-info mb-4 shadow-sm">
             <div class="card-header bg-info text-white fw-bold">
-                <i class="bi bi-envelope-open-fill me-1"></i> Pending Workspace Invitations
+                <i class="bi bi-envelope-open-fill me-1"></i> Received Workspace Invitations
             </div>
             <div class="card-body p-0">
                 <ul class="list-group list-group-flush">
-                    @foreach (var invite in pendingInvites)
+                    @foreach (var invite in myInvites)
                     {
                         <li class="list-group-item d-flex justify-content-between align-items-center py-3">
                             <div>
@@ -62,10 +56,10 @@
                                 <p class="mb-0 text-muted small">Invited by: <strong>@invite.SenderName</strong> &bull; Received: @invite.SentAt.ToShortDateString()</p>
                             </div>
                             <div>
-                                <button class="btn btn-sm btn-success me-2" @onclick="() => RespondInvite(invite.Id, true)">
+                                <button class="btn btn-sm btn-success me-2" @onclick="() => RespondToInvite(invite.Id, true)">
                                     Accept
                                 </button>
-                                <button class="btn btn-sm btn-outline-danger" @onclick="() => RespondInvite(invite.Id, false)">
+                                <button class="btn btn-sm btn-outline-danger" @onclick="() => RespondToInvite(invite.Id, false)">
                                     Decline
                                 </button>
                             </div>
@@ -78,35 +72,39 @@
 
     <!-- Main Workspace Layout -->
     <div class="row">
-        <!-- Workspaces List Column -->
+        <!-- Left Column: Workspaces List -->
         <div class="col-md-5 mb-3">
             <div class="card shadow-sm h-100">
-                <div class="card-header bg-dark text-white fw-semibold">
-                    My Workspaces
+                <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+                    <span class="fw-semibold">Workspaces</span>
+                    @if (isGlobalAdmin)
+                    {
+                        <span class="badge bg-warning text-dark">Admin (All Workspaces)</span>
+                    }
                 </div>
                 <div class="card-body p-0">
-                    @if (myWorkspaces == null)
+                    @if (workspaces == null)
                     {
                         <div class="p-3 text-muted"><em>Loading workspaces...</em></div>
                     }
-                    else if (!myWorkspaces.Any())
+                    else if (!workspaces.Any())
                     {
                         <div class="p-4 text-center text-muted">
-                            You are not currently part of any workspace.
+                            No workspaces available. Create one to get started!
                         </div>
                     }
                     else
                     {
                         <div class="list-group list-group-flush">
-                            @foreach (var ws in myWorkspaces)
+                            @foreach (var ws in workspaces)
                             {
                                 var isSelected = selectedWorkspace?.Id == ws.Id;
                                 <button class="list-group-item list-group-item-action @(isSelected ? "active" : "")"
                                         @onclick="() => SelectWorkspace(ws)">
                                     <div class="d-flex w-100 justify-content-between align-items-center">
                                         <h6 class="mb-1 fw-bold">@ws.Name</h6>
-                                        <span class="badge @(ws.WorkspaceRole == "WorkspaceAdmin" ? "bg-warning text-dark" : "bg-secondary")">
-                                            @ws.WorkspaceRole
+                                        <span class="badge @(ws.CurrentUserRole == "WorkspaceManager" ? "bg-warning text-dark" : ws.CurrentUserRole == "Member" ? "bg-info text-dark" : "bg-secondary")">
+                                            @ws.CurrentUserRole
                                         </span>
                                     </div>
                                     <small class="@(isSelected ? "text-white-50" : "text-muted")">
@@ -120,65 +118,407 @@
             </div>
         </div>
 
-        <!-- Selected Workspace Detail Column -->
+        <!-- Right Column: Selected Workspace Details -->
         <div class="col-md-7 mb-3">
             @if (selectedWorkspace == null)
             {
                 <div class="card shadow-sm h-100 d-flex align-items-center justify-content-center p-5 text-muted">
-                    <p class="mb-0">Select a workspace from the left to view members and collaboration options.</p>
+                    <p class="mb-0">Select a workspace from the left to view details and members.</p>
                 </div>
             }
             else
             {
-                <div class="card shadow-sm h-100">
-                    <div class="card-header bg-white d-flex justify-content-between align-items-center py-3">
+                var isManagerOrAdmin = selectedWorkspace.CurrentUserRole == "WorkspaceManager" || isGlobalAdmin;
+                var isNonMember = selectedWorkspace.CurrentUserRole == "None";
+
+                <div class="card shadow-sm" style="max-height: 80vh; display: flex; flex-direction: column;">
+                    <!-- Fixed Card Header -->
+                    <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center py-2 flex-shrink-0">
                         <div>
-                            <h5 class="mb-0 fw-bold">@selectedWorkspace.Name</h5>
-                            <small class="text-muted">Created: @selectedWorkspace.CreatedAt.ToShortDateString()</small>
+                            <h6 class="mb-0 fw-bold">@selectedWorkspace.Name</h6>
+                            <small class="text-white-50">Created: @selectedWorkspace.CreatedAt.ToShortDateString()</small>
                         </div>
-                        @if (selectedWorkspace.WorkspaceRole == "WorkspaceAdmin")
-                        {
-                            <button class="btn btn-sm btn-outline-primary" @onclick="() => showInviteModal = true">
-                                <i class="bi bi-person-plus-fill me-1"></i> Invite Member
-                            </button>
-                        }
+                        <div>
+                            @if (isManagerOrAdmin)
+                            {
+                                <button class="btn btn-sm btn-warning text-dark fw-semibold" @onclick="() => showInviteModal = true">
+                                    <i class="bi bi-person-plus-fill me-1"></i> Invite Member
+                                </button>
+                            }
+                            else if (isNonMember)
+                            {
+                                <button class="btn btn-sm btn-success" @onclick="() => SubmitAccessRequest(selectedWorkspace.Id)">
+                                    <i class="bi bi-door-open-fill me-1"></i> Request Access
+                                </button>
+                            }
+                        </div>
                     </div>
 
-                    <div class="card-body">
-                        <h6 class="fw-bold mb-3">Active Workspace Members</h6>
-                        @if (workspaceMembers == null)
+                    <!-- Single Scrollable Body Container -->
+                    <div class="card-body" style="overflow-y: auto; overflow-x: hidden; flex: 1 1 auto; max-height: calc(80vh - 75px);">
+                        <!-- Navigation Tabs -->
+                        <ul class="nav nav-tabs mb-3">
+                            <li class="nav-item">
+                                <button class="nav-link @(activeTab == "members" ? "active" : "")" 
+                                        @onclick='() => activeTab = "members"'>
+                                    <i class="bi bi-people-fill me-1"></i> Members
+                                </button>
+                            </li>
+                            <li class="nav-item">
+                                <button class="nav-link @(activeTab == "files" ? "active" : "")" 
+                                        @onclick='() => SwitchToFilesTab("files")'>
+                                    <i class="bi bi-folder-fill me-1"></i> Repository Files
+                                </button>
+                            </li>
+                            <li class="nav-item">
+                                <button class="nav-link @(activeTab == "inbuilt" ? "active" : "")" 
+                                        @onclick='() => SwitchToFilesTab("inbuilt")'>
+                                    <i class="bi bi-code-slash me-1"></i> Inbuilt Repository
+                                </button>
+                            </li>
+                        </ul>
+
+                        @if (activeTab == "members")
                         {
-                            <p class="text-muted"><em>Loading members...</em></p>
-                        }
-                        else
-                        {
-                            <div class="table-responsive">
-                                <table class="table table-sm table-hover align-middle mb-0">
-                                    <thead class="table-light">
-                                        <tr>
-                                            <th>Name</th>
-                                            <th>Email</th>
-                                            <th>Role</th>
-                                            <th>Joined</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        @foreach (var member in workspaceMembers)
+                            <!-- Pending Inbound Access Requests -->
+                            @if (isManagerOrAdmin && pendingAccessRequests != null && pendingAccessRequests.Any())
+                            {
+                                <div class="alert alert-warning mb-4">
+                                    <h6 class="fw-bold mb-2"><i class="bi bi-person-exclamation me-1"></i> Pending Access Requests</h6>
+                                    <ul class="list-group list-group-flush bg-transparent">
+                                        @foreach (var req in pendingAccessRequests)
                                         {
-                                            <tr>
-                                                <td class="fw-semibold">@member.Name</td>
-                                                <td>@member.Email</td>
-                                                <td>
-                                                    <span class="badge @(member.WorkspaceRole == "WorkspaceAdmin" ? "bg-warning text-dark" : "bg-light text-dark border")">
-                                                        @member.WorkspaceRole
-                                                    </span>
-                                                </td>
-                                                <td class="small text-muted">@member.JoinedAt.ToShortDateString()</td>
-                                            </tr>
+                                            <li class="list-group-item d-flex justify-content-between align-items-center bg-transparent px-0 py-2">
+                                                <div>
+                                                    <strong>@req.RequesterName</strong> (@req.RequesterEmail)
+                                                    <div class="text-muted small">Requested on @req.RequestedAt.ToShortDateString()</div>
+                                                </div>
+                                                <div>
+                                                    <button class="btn btn-sm btn-success me-1" @onclick="() => ReviewRequest(req.Id, true)">
+                                                        Approve
+                                                    </button>
+                                                    <button class="btn btn-sm btn-outline-danger" @onclick="() => ReviewRequest(req.Id, false)">
+                                                        Reject
+                                                    </button>
+                                                </div>
+                                            </li>
                                         }
-                                    </tbody>
-                                </table>
+                                    </ul>
+                                </div>
+                            }
+
+                            <!-- Active Members Table -->
+                            <h6 class="fw-bold mb-3">Active Workspace Members</h6>
+                            @if (workspaceMembers == null)
+                            {
+                                <p class="text-muted"><em>Loading members...</em></p>
+                            }
+                            else if (!workspaceMembers.Any())
+                            {
+                                <p class="text-muted"><em>No active members in this workspace.</em></p>
+                            }
+                            else
+                            {
+                                <div class="table-responsive">
+                                    <table class="table table-sm table-hover align-middle mb-0">
+                                        <thead class="table-light">
+                                            <tr>
+                                                <th>Name</th>
+                                                <th>Email</th>
+                                                <th>Role</th>
+                                                <th>Joined</th>
+                                                @if (isManagerOrAdmin)
+                                                {
+                                                    <th class="text-end">Actions</th>
+                                                }
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            @foreach (var member in workspaceMembers)
+                                            {
+                                                <tr>
+                                                    <td class="fw-semibold">@member.Name</td>
+                                                    <td>@member.Email</td>
+                                                    <td>
+                                                        <span class="badge @(member.WorkspaceRole == "WorkspaceManager" ? "bg-warning text-dark" : "bg-light text-dark border")">
+                                                            @member.WorkspaceRole
+                                                        </span>
+                                                    </td>
+                                                    <td class="small text-muted">@member.JoinedAt.ToShortDateString()</td>
+                                                    @if (isManagerOrAdmin)
+                                                    {
+                                                        <td class="text-end">
+                                                            @if (member.UserId != currentUserId && member.WorkspaceRole != "WorkspaceManager")
+                                                            {
+                                                                <button class="btn btn-sm btn-outline-danger py-0 px-2"
+                                                                        @onclick="() => DeleteMember(member.UserId)">
+                                                                    Remove
+                                                                </button>
+                                                            }
+                                                        </td>
+                                                    }
+                                                </tr>
+                                            }
+                                        </tbody>
+                                    </table>
+                                </div>
+                            }
+                        }
+                        else if (activeTab == "files")
+                        {
+                            <!-- Git Repository Connect & File Browser -->
+                            <div class="row g-2 mb-3 align-items-center">
+                                <div class="col-md-4">
+                                    <input type="text" class="form-control form-control-sm" placeholder="Owner / Org" @bind="repoOwner" />
+                                </div>
+                                <div class="col-md-4">
+                                    <input type="text" class="form-control form-control-sm" placeholder="Repository" @bind="repoName" />
+                                </div>
+                                <div class="col-md-2">
+                                    <input type="text" class="form-control form-control-sm" placeholder="Branch" @bind="repoBranch" />
+                                </div>
+                                <div class="col-md-2">
+                                    <button class="btn btn-sm btn-dark w-100" @onclick="() => LoadRepoFiles()">
+                                        Connect
+                                    </button>
+                                </div>
                             </div>
+
+                            @if (isGitLoading)
+                            {
+                                <div class="p-3 text-muted"><em>Connecting to repository and loading files...</em></div>
+                            }
+                            else if (!string.IsNullOrEmpty(gitError))
+                            {
+                                <div class="alert alert-danger py-2 small">@gitError</div>
+                            }
+                            else if (gitFiles != null && gitFiles.Any())
+                            {
+                                <nav aria-label="breadcrumb">
+                                    <ol class="breadcrumb bg-light p-2 rounded small mb-2">
+                                        <li class="breadcrumb-item">
+                                            <button class="btn btn-link btn-sm p-0 text-decoration-none" @onclick='() => NavigateToDir("")'>root</button>
+                                        </li>
+                                        @if (!string.IsNullOrEmpty(currentGitPath))
+                                        {
+                                            var segments = currentGitPath.Split('/');
+                                            var accumulated = "";
+                                            @for (int i = 0; i < segments.Length; i++)
+                                            {
+                                                var seg = segments[i];
+                                                accumulated = string.IsNullOrEmpty(accumulated) ? seg : $"{accumulated}/{seg}";
+                                                var pathTarget = accumulated;
+                                                <li class="breadcrumb-item @(i == segments.Length - 1 ? "active" : "")">
+                                                    @if (i == segments.Length - 1)
+                                                    {
+                                                        <span>@seg</span>
+                                                    }
+                                                    else
+                                                    {
+                                                        <button class="btn btn-link btn-sm p-0 text-decoration-none" @onclick="() => NavigateToDir(pathTarget)">@seg</button>
+                                                    }
+                                                </li>
+                                            }
+                                        }
+                                    </ol>
+                                </nav>
+
+                                <div class="table-responsive border rounded">
+                                    <table class="table table-sm table-hover align-middle mb-0">
+                                        <thead class="table-light">
+                                            <tr>
+                                                <th>Name</th>
+                                                <th>Type</th>
+                                                <th>Size</th>
+                                                <th class="text-end">Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            @if (!string.IsNullOrEmpty(currentGitPath))
+                                            {
+                                                <tr>
+                                                    <td colspan="4">
+                                                        <button class="btn btn-link btn-sm p-0 text-decoration-none" @onclick="NavigateUp">
+                                                            <i class="bi bi-arrow-up-circle me-1"></i> .. (Back)
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            }
+                                            @foreach (var item in gitFiles)
+                                            {
+                                                <tr>
+                                                    <td>
+                                                        @if (item.Type == "dir")
+                                                        {
+                                                            <button class="btn btn-link btn-sm p-0 text-decoration-none fw-bold text-dark"
+                                                                    @onclick="() => NavigateToDir(item.Path)">
+                                                                <i class="bi bi-folder-fill text-warning me-1"></i> @item.Name
+                                                            </button>
+                                                        }
+                                                        else
+                                                        {
+                                                            <span><i class="bi bi-file-earmark-code text-secondary me-1"></i> @item.Name</span>
+                                                        }
+                                                    </td>
+                                                    <td>
+                                                        <span class="badge @(item.Type == "dir" ? "bg-info text-dark" : "bg-light text-dark border")">
+                                                            @item.Type
+                                                        </span>
+                                                    </td>
+                                                    <td class="small text-muted">
+                                                        @(item.Type == "dir" ? "-" : $"{item.Size / 1024.0:F1} KB")
+                                                    </td>
+                                                    <td class="text-end">
+                                                        @if (!string.IsNullOrEmpty(item.HtmlUrl))
+                                                        {
+                                                            <a href="@item.HtmlUrl" target="_blank" class="btn btn-sm btn-outline-secondary py-0 px-2" title="View on Git">
+                                                                <i class="bi bi-box-arrow-up-right"></i>
+                                                            </a>
+                                                        }
+                                                    </td>
+                                                </tr>
+                                            }
+                                        </tbody>
+                                    </table>
+                                </div>
+                            }
+                            else
+                            {
+                                <div class="card p-4 text-center text-muted border-dashed">
+                                    Enter a Git Owner/Repository and click <strong>Connect</strong> to view repository files.
+                                </div>
+                            }
+                        }
+                        else if (activeTab == "inbuilt")
+                        {
+                            <!-- Inbuilt Repository -->
+                            <div class="row g-2 mb-3 align-items-center">
+                                <div class="col-md-4">
+                                    <input type="text" class="form-control form-control-sm" placeholder="Owner / Org" @bind="repoOwner" />
+                                </div>
+                                <div class="col-md-4">
+                                    <input type="text" class="form-control form-control-sm" placeholder="Repository" @bind="repoName" />
+                                </div>
+                                <div class="col-md-2">
+                                    <input type="text" class="form-control form-control-sm" placeholder="Branch" @bind="repoBranch" />
+                                </div>
+                                <div class="col-md-2">
+                                    <button class="btn btn-sm btn-primary w-100" @onclick="() => LoadRepoFiles()">
+                                        Load Repo
+                                    </button>
+                                </div>
+                            </div>
+
+                            @if (isGitLoading)
+                            {
+                                <div class="p-3 text-muted"><em>Fetching repository contents...</em></div>
+                            }
+                            else if (!string.IsNullOrEmpty(gitError))
+                            {
+                                <div class="alert alert-danger py-2 small">@gitError</div>
+                            }
+                            else
+                            {
+                                <div class="card mb-3 border">
+                                    <div class="card-header bg-light d-flex justify-content-between align-items-center py-2">
+                                        <span class="small fw-bold"><i class="bi bi-folder2-open me-1"></i> Directory Explorer</span>
+                                        <nav aria-label="breadcrumb">
+                                            <ol class="breadcrumb small mb-0">
+                                                <li class="breadcrumb-item">
+                                                    <button class="btn btn-link btn-sm p-0 text-decoration-none" @onclick='() => NavigateToDir("")'>root</button>
+                                                </li>
+                                                @if (!string.IsNullOrEmpty(currentGitPath))
+                                                {
+                                                    var segments = currentGitPath.Split('/');
+                                                    var accumulated = "";
+                                                    @for (int i = 0; i < segments.Length; i++)
+                                                    {
+                                                        var seg = segments[i];
+                                                        accumulated = string.IsNullOrEmpty(accumulated) ? seg : $"{accumulated}/{seg}";
+                                                        var pathTarget = accumulated;
+                                                        <li class="breadcrumb-item @(i == segments.Length - 1 ? "active" : "")">
+                                                            @if (i == segments.Length - 1)
+                                                            {
+                                                                <span>@seg</span>
+                                                            }
+                                                            else
+                                                            {
+                                                                <button class="btn btn-link btn-sm p-0 text-decoration-none" @onclick="() => NavigateToDir(pathTarget)">@seg</button>
+                                                            }
+                                                        </li>
+                                                    }
+                                                }
+                                            </ol>
+                                        </nav>
+                                    </div>
+                                    <div class="card-body p-0" style="max-height: 240px; overflow-y: auto;">
+                                        @if (gitFiles != null && gitFiles.Any())
+                                        {
+                                            <div class="list-group list-group-flush small">
+                                                @if (!string.IsNullOrEmpty(currentGitPath))
+                                                {
+                                                    <button class="list-group-item list-group-item-action py-1 text-primary" @onclick="NavigateUp">
+                                                        <i class="bi bi-arrow-up-circle me-1"></i> .. (Back)
+                                                    </button>
+                                                }
+                                                @foreach (var item in gitFiles)
+                                                {
+                                                    if (item.Type == "dir")
+                                                    {
+                                                        <button class="list-group-item list-group-item-action py-1 d-flex justify-content-between align-items-center"
+                                                                @onclick="() => NavigateToDir(item.Path)">
+                                                            <span><i class="bi bi-folder-fill text-warning me-2"></i><strong>@item.Name</strong></span>
+                                                            <span class="text-muted">folder</span>
+                                                        </button>
+                                                    }
+                                                    else
+                                                    {
+                                                        var isCurrent = selectedFile?.Path == item.Path;
+                                                        <button class="list-group-item list-group-item-action py-1 d-flex justify-content-between align-items-center @(isCurrent ? "active" : "")"
+                                                                @onclick="() => ViewFileInbuilt(item)">
+                                                            <span><i class="bi bi-file-earmark-code me-2"></i>@item.Name</span>
+                                                            <span class="@(isCurrent ? "text-white-50" : "text-muted")">@($"{item.Size / 1024.0:F1} KB")</span>
+                                                        </button>
+                                                    }
+                                                }
+                                            </div>
+                                        }
+                                        else
+                                        {
+                                            <div class="p-3 text-muted text-center">No repository loaded. Enter repository details above and click "Load Repo".</div>
+                                        }
+                                    </div>
+                                </div>
+
+                                @if (isFileLoading)
+                                {
+                                    <div class="p-3 text-center text-muted border rounded bg-light">
+                                        <em>Loading file contents...</em>
+                                    </div>
+                                }
+                                else if (selectedFile != null && selectedFileContent != null)
+                                {
+                                    <div class="card shadow-sm border mt-3" style="width: 100%; max-width: 100%; overflow: hidden;">
+                                        <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center py-2 flex-shrink-0">
+                                            <span class="small font-monospace text-truncate me-2" title="@selectedFile.Path">
+                                                <i class="bi bi-file-text me-1"></i> @selectedFile.Path
+                                            </span>
+                                            <div class="flex-shrink-0">
+                                                <span class="badge bg-secondary me-2">@($"{selectedFile.Size / 1024.0:F1} KB")</span>
+                                                <button class="btn btn-sm btn-outline-light py-0 px-2" @onclick="CloseFileViewer">
+                                                    Close
+                                                </button>
+                                            </div>
+                                        </div>
+                                        <div class="card-body p-0" style="max-height: 380px; overflow-x: auto; overflow-y: auto;">
+                                            <pre class="m-0 p-3 bg-light text-dark font-monospace" 
+                                                 style="font-size: 0.85rem; line-height: 1.5; white-space: pre; margin: 0; display: block; width: max-content; min-width: 100%;">
+<code>@selectedFileContent</code>
+                                            </pre>
+                                        </div>
+                                    </div>
+                                }
+                            }
                         }
                     </div>
                 </div>
@@ -200,16 +540,16 @@
                 <div class="modal-body">
                     <div class="mb-3">
                         <label class="form-label">Workspace Name</label>
-                        <input type="text" class="form-control" @bind="newWsName" placeholder="e.g. Core API Project" />
+                        <input type="text" class="form-control" @bind="newWsName" placeholder="e.g. Frontend Core Team" />
                     </div>
                     <div class="mb-3">
                         <label class="form-label">Description</label>
-                        <textarea class="form-control" rows="3" @bind="newWsDescription" placeholder="Project goals, guidelines, or repo details..."></textarea>
+                        <textarea class="form-control" rows="3" @bind="newWsDescription" placeholder="Project goals, guidelines, or details..."></textarea>
                     </div>
                 </div>
                 <div class="modal-footer">
                     <button class="btn btn-secondary" @onclick="() => showCreateModal = false">Cancel</button>
-                    <button class="btn btn-primary" @onclick="CreateWorkspace">Create</button>
+                    <button class="btn btn-primary" @onclick="CreateWorkspace">Create Workspace</button>
                 </div>
             </div>
         </div>
@@ -241,10 +581,11 @@
 }
 
 @code {
-    private List<WorkspaceItem>? myWorkspaces;
-    private WorkspaceItem? selectedWorkspace;
-    private List<MemberItem>? workspaceMembers;
-    private List<InviteItem>? pendingInvites;
+    private List<WorkspaceDto>? workspaces;
+    private WorkspaceDto? selectedWorkspace;
+    private List<WorkspaceMemberDto>? workspaceMembers;
+    private List<WorkspaceInviteDto>? myInvites;
+    private List<WorkspaceAccessRequestDto>? pendingAccessRequests;
 
     private bool showCreateModal = false;
     private bool showInviteModal = false;
@@ -253,13 +594,30 @@
     private string inviteEmail = string.Empty;
 
     private string? currentUserId;
+    private bool isGlobalAdmin = false;
     private string? statusMessage;
     private string? errorMessage;
+
+    private string activeTab = "members";
+    private string repoOwner = string.Empty;
+    private string repoName = string.Empty;
+    private string repoBranch = "main";
+    private string currentGitPath = string.Empty;
+    private bool isGitLoading = false;
+    private string? gitError;
+    private List<GitItemDto>? gitFiles;
+
+    // Inbuilt Code Viewer State
+    private GitItemDto? selectedFile;
+    private string? selectedFileContent;
+    private bool isFileLoading = false;
 
     protected override async Task OnInitializedAsync()
     {
         var authState = await AuthStateProvider.GetAuthenticationStateAsync();
-        currentUserId = authState.User.FindFirstValue(ClaimTypes.NameIdentifier);
+        var user = authState.User;
+        currentUserId = user.FindFirstValue(ClaimTypes.NameIdentifier);
+        isGlobalAdmin = user.IsInRole("Admin");
 
         if (!string.IsNullOrEmpty(currentUserId))
         {
@@ -273,78 +631,64 @@
         {
             if (string.IsNullOrEmpty(currentUserId)) return;
 
-            myWorkspaces = await DbContext.WorkspaceMembers
-                .AsNoTracking()
-                .Where(wm => wm.UserId == currentUserId)
-                .Select(wm => new WorkspaceItem
-                {
-                    Id = wm.Workspace.Id,
-                    Name = wm.Workspace.Name,
-                    Description = wm.Workspace.Description,
-                    WorkspaceRole = wm.WorkspaceRole,
-                    CreatedAt = wm.Workspace.CreatedAt
-                })
-                .ToListAsync();
+            if (isGlobalAdmin)
+            {
+                var all = await WorkspaceRepo.GetAllWorkspacesAsync(currentUserId);
+                workspaces = all.ToList();
+            }
+            else
+            {
+                var mine = await WorkspaceRepo.GetUserWorkspacesAsync(currentUserId);
+                workspaces = mine.ToList();
+            }
 
-            pendingInvites = await DbContext.WorkspaceInvites
-                .AsNoTracking()
-                .Where(wi => wi.ReceiverUserId == currentUserId && wi.Status == "Pending")
-                .Select(wi => new InviteItem
-                {
-                    Id = wi.Id,
-                    WorkspaceId = wi.WorkspaceId,
-                    WorkspaceName = wi.Workspace.Name,
-                    WorkspaceDescription = wi.Workspace.Description,
-                    SenderName = wi.SenderUser.Name,
-                    SentAt = wi.SentAt
-                })
-                .ToListAsync();
+            var invites = await WorkspaceRepo.GetUserPendingInvitesAsync(currentUserId);
+            myInvites = invites.ToList();
 
             if (selectedWorkspace != null)
             {
-                var refreshedSelection = myWorkspaces.FirstOrDefault(w => w.Id == selectedWorkspace.Id);
-                if (refreshedSelection != null)
+                var refreshed = workspaces.FirstOrDefault(w => w.Id == selectedWorkspace.Id);
+                if (refreshed != null)
                 {
-                    await SelectWorkspace(refreshedSelection);
+                    await SelectWorkspace(refreshed);
                 }
                 else
                 {
                     selectedWorkspace = null;
                 }
             }
-            else if (myWorkspaces.Any())
+            else if (workspaces.Any())
             {
-                await SelectWorkspace(myWorkspaces.First());
+                await SelectWorkspace(workspaces.First());
             }
         }
         catch (Exception ex)
         {
-            errorMessage = $"Error loading data: {ex.Message}";
+            errorMessage = $"Error loading workspaces: {ex.Message}";
         }
     }
 
-    private async Task SelectWorkspace(WorkspaceItem ws)
+    private async Task SelectWorkspace(WorkspaceDto ws)
     {
         selectedWorkspace = ws;
         try
         {
-            workspaceMembers = await DbContext.WorkspaceMembers
-                .AsNoTracking()
-                .Where(wm => wm.WorkspaceId == ws.Id)
-                .Select(wm => new MemberItem
-                {
-                    UserId = wm.UserId,
-                    UserName = wm.User.UserName ?? string.Empty,
-                    Name = wm.User.Name,
-                    Email = wm.User.Email ?? string.Empty,
-                    WorkspaceRole = wm.WorkspaceRole,
-                    JoinedAt = wm.JoinedAt
-                })
-                .ToListAsync();
+            var members = await WorkspaceRepo.GetMembersAsync(ws.Id);
+            workspaceMembers = members.ToList();
+
+            if (ws.CurrentUserRole == "WorkspaceManager" || isGlobalAdmin)
+            {
+                var requests = await WorkspaceRepo.GetPendingAccessRequestsForWorkspaceAsync(ws.Id);
+                pendingAccessRequests = requests.ToList();
+            }
+            else
+            {
+                pendingAccessRequests = null;
+            }
         }
         catch (Exception ex)
         {
-            errorMessage = $"Error loading members: {ex.Message}";
+            errorMessage = $"Error loading workspace details: {ex.Message}";
         }
     }
 
@@ -357,36 +701,24 @@
 
         try
         {
-            var ws = new Workspace
+            var createDto = new WorkspaceCreateDto
             {
                 Name = newWsName.Trim(),
-                Description = newWsDescription.Trim(),
-                OwnerId = currentUserId
+                Description = newWsDescription.Trim()
             };
 
-            DbContext.Workspaces.Add(ws);
-            await DbContext.SaveChangesAsync();
+            var created = await WorkspaceRepo.CreateWorkspaceAsync(createDto, currentUserId);
 
-            var membership = new WorkspaceMember
-            {
-                WorkspaceId = ws.Id,
-                UserId = currentUserId,
-                WorkspaceRole = "WorkspaceAdmin"
-            };
-
-            DbContext.WorkspaceMembers.Add(membership);
-            await DbContext.SaveChangesAsync();
-
-            statusMessage = "Workspace created successfully.";
+            statusMessage = "Workspace created successfully! You are the manager of this workspace.";
             showCreateModal = false;
             newWsName = string.Empty;
             newWsDescription = string.Empty;
 
             await LoadData();
-            var created = myWorkspaces?.FirstOrDefault(w => w.Id == ws.Id);
-            if (created != null)
+            var target = workspaces?.FirstOrDefault(w => w.Id == created.Id);
+            if (target != null)
             {
-                await SelectWorkspace(created);
+                await SelectWorkspace(target);
             }
         }
         catch (Exception ex)
@@ -404,53 +736,30 @@
 
         try
         {
-            var targetUser = await UserManager.FindByEmailAsync(inviteEmail.Trim());
-            if (targetUser == null)
+            var (succeeded, msg) = await WorkspaceRepo.SendInviteAsync(
+                selectedWorkspace.Id,
+                currentUserId,
+                inviteEmail.Trim(),
+                isGlobalAdmin);
+
+            if (succeeded)
             {
-                errorMessage = $"No user found with email '{inviteEmail}'.";
-                return;
+                statusMessage = msg;
+                showInviteModal = false;
+                inviteEmail = string.Empty;
             }
-
-            var isAlreadyMember = await DbContext.WorkspaceMembers
-                .AnyAsync(wm => wm.WorkspaceId == selectedWorkspace.Id && wm.UserId == targetUser.Id);
-
-            if (isAlreadyMember)
+            else
             {
-                errorMessage = "This user is already a member of this workspace.";
-                return;
+                errorMessage = msg;
             }
-
-            var hasPending = await DbContext.WorkspaceInvites
-                .AnyAsync(wi => wi.WorkspaceId == selectedWorkspace.Id && wi.ReceiverUserId == targetUser.Id && wi.Status == "Pending");
-
-            if (hasPending)
-            {
-                errorMessage = "An invitation is already pending for this user.";
-                return;
-            }
-
-            var invite = new WorkspaceInvite
-            {
-                WorkspaceId = selectedWorkspace.Id,
-                SenderUserId = currentUserId,
-                ReceiverUserId = targetUser.Id,
-                Status = "Pending"
-            };
-
-            DbContext.WorkspaceInvites.Add(invite);
-            await DbContext.SaveChangesAsync();
-
-            statusMessage = $"Invitation successfully sent to {inviteEmail}.";
-            showInviteModal = false;
-            inviteEmail = string.Empty;
         }
         catch (Exception ex)
         {
-            errorMessage = $"Failed to send invitation: {ex.Message}";
+            errorMessage = $"Failed to send invite: {ex.Message}";
         }
     }
 
-    private async Task RespondInvite(int inviteId, bool accept)
+    private async Task RespondToInvite(int inviteId, bool accept)
     {
         if (string.IsNullOrEmpty(currentUserId)) return;
 
@@ -459,460 +768,210 @@
 
         try
         {
-            var invite = await DbContext.WorkspaceInvites
-                .FirstOrDefaultAsync(wi => wi.Id == inviteId && wi.ReceiverUserId == currentUserId && wi.Status == "Pending");
-
-            if (invite == null)
+            var (succeeded, msg) = await WorkspaceRepo.RespondToInviteAsync(inviteId, currentUserId, accept);
+            if (succeeded)
             {
-                errorMessage = "Invitation not found or already processed.";
+                statusMessage = msg;
+                await LoadData();
+            }
+            else
+            {
+                errorMessage = msg;
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error processing invitation: {ex.Message}";
+        }
+    }
+
+    private async Task SubmitAccessRequest(int workspaceId)
+    {
+        if (string.IsNullOrEmpty(currentUserId)) return;
+
+        statusMessage = null;
+        errorMessage = null;
+
+        try
+        {
+            var (succeeded, msg) = await WorkspaceRepo.RequestWorkspaceAccessAsync(workspaceId, currentUserId);
+            if (succeeded)
+            {
+                statusMessage = msg;
+                await LoadData();
+            }
+            else
+            {
+                errorMessage = msg;
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Failed to request access: {ex.Message}";
+        }
+    }
+
+    private async Task ReviewRequest(int requestId, bool approve)
+    {
+        if (string.IsNullOrEmpty(currentUserId) || selectedWorkspace == null) return;
+
+        statusMessage = null;
+        errorMessage = null;
+
+        try
+        {
+            var (succeeded, msg) = await WorkspaceRepo.ReviewAccessRequestAsync(requestId, currentUserId, approve);
+            if (succeeded)
+            {
+                statusMessage = msg;
+                await SelectWorkspace(selectedWorkspace);
+            }
+            else
+            {
+                errorMessage = msg;
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error reviewing access request: {ex.Message}";
+        }
+    }
+
+    private async Task DeleteMember(string targetUserId)
+    {
+        if (selectedWorkspace == null || string.IsNullOrEmpty(currentUserId)) return;
+
+        statusMessage = null;
+        errorMessage = null;
+
+        try
+        {
+            var isOwnerOrManager = selectedWorkspace.CurrentUserRole == "WorkspaceManager" || selectedWorkspace.OwnerId == currentUserId;
+            if (!isOwnerOrManager && isGlobalAdmin && selectedWorkspace.OwnerId != currentUserId)
+            {
+                errorMessage = "Admins cannot remove members from workspaces owned by other users.";
                 return;
             }
 
-            if (accept)
+            var removed = await WorkspaceRepo.RemoveMemberAsync(selectedWorkspace.Id, targetUserId);
+            if (removed)
             {
-                invite.Status = "Accepted";
-                DbContext.WorkspaceMembers.Add(new WorkspaceMember
-                {
-                    WorkspaceId = invite.WorkspaceId,
-                    UserId = currentUserId,
-                    WorkspaceRole = "Member"
-                });
+                statusMessage = "Member removed successfully.";
+                await SelectWorkspace(selectedWorkspace);
             }
             else
             {
-                invite.Status = "Declined";
+                errorMessage = "Could not remove member.";
             }
-
-            await DbContext.SaveChangesAsync();
-            statusMessage = accept ? "Invitation accepted!" : "Invitation declined.";
-            await LoadData();
         }
         catch (Exception ex)
         {
-            errorMessage = $"Failed to process invitation: {ex.Message}";
+            errorMessage = $"Failed to remove member: {ex.Message}";
         }
     }
 
-    public class WorkspaceItem
+    private async Task SwitchToFilesTab(string targetTab)
     {
-        public int Id { get; set; }
-        public string Name { get; set; } = string.Empty;
-        public string Description { get; set; } = string.Empty;
-        public string WorkspaceRole { get; set; } = string.Empty;
-        public DateTime CreatedAt { get; set; }
+        activeTab = targetTab;
+        if (gitFiles == null && !string.IsNullOrWhiteSpace(repoOwner) && !string.IsNullOrWhiteSpace(repoName))
+        {
+            await LoadRepoFiles();
+        }
     }
 
-    public class MemberItem
+    private async Task ViewFileInbuilt(GitItemDto item)
     {
-        public string UserId { get; set; } = string.Empty;
-        public string UserName { get; set; } = string.Empty;
-        public string Name { get; set; } = string.Empty;
-        public string Email { get; set; } = string.Empty;
-        public string WorkspaceRole { get; set; } = string.Empty;
-        public DateTime JoinedAt { get; set; }
-    }
+        if (string.IsNullOrWhiteSpace(repoOwner) || string.IsNullOrWhiteSpace(repoName)) return;
 
-    public class InviteItem
-    {
-        public int Id { get; set; }
-        public int WorkspaceId { get; set; }
-        public string WorkspaceName { get; set; } = string.Empty;
-        public string WorkspaceDescription { get; set; } = string.Empty;
-        public string SenderName { get; set; } = string.Empty;
-        public DateTime SentAt { get; set; }
-    }
-}
+        selectedFile = item;
+        isFileLoading = true;
+        selectedFileContent = null;
+        gitError = null;
 
+        try
+        {
+            var (succeeded, content, error) = await GitService.GetFileContentAsync(
+                repoOwner.Trim(),
+                repoName.Trim(),
+                item.Path,
+                string.IsNullOrWhiteSpace(repoBranch) ? "main" : repoBranch.Trim());
 
-
-
-
-
-
-@* Commenting out my previous code to fix 
-   the error "Error loading workspaces: Response status code does
-   not indicate success: 401 (Unauthorized)."*@
-
-   @*
-@page "/workspaces"
-@attribute [Authorize]
-@using CollabSpace.Models
-@inject HttpClient Http
-
-<PageTitle>CollabSpace - Workspaces</PageTitle>
-
-<div class="container mt-4">
-    <!-- Header with Admin Action -->
-    <div class="d-flex justify-content-between align-items-center mb-4">
-        <div>
-            <h2 class="fw-bold mb-0">Collaboration Workspaces</h2>
-            <p class="text-muted small mb-0">Manage shared team environments and active collaborations.</p>
-        </div>
-        <AuthorizeView Roles="Admin">
-            <Authorized>
-                <button class="btn btn-primary" @onclick="() => showCreateModal = true">
-                    <i class="bi bi-plus-lg"></i> Create Workspace
-                </button>
-            </Authorized>
-        </AuthorizeView>
-    </div>
-
-    <!-- Feedback Alerts -->
-    @if (!string.IsNullOrEmpty(statusMessage))
-    {
-        <div class="alert alert-success alert-dismissible fade show" role="alert">
-            @statusMessage
-            <button type="button" class="btn-close" @onclick="() => statusMessage = null"></button>
-        </div>
-    }
-
-    @if (!string.IsNullOrEmpty(errorMessage))
-    {
-        <div class="alert alert-danger alert-dismissible fade show" role="alert">
-            @errorMessage
-            <button type="button" class="btn-close" @onclick="() => errorMessage = null"></button>
-        </div>
-    }
-
-    <!-- Pending Invitations Section (Visible to everyone if invites exist) -->
-    @if (pendingInvites != null && pendingInvites.Any())
-    {
-        <div class="card border-info mb-4 shadow-sm">
-            <div class="card-header bg-info text-white fw-bold">
-                <i class="bi bi-envelope-open-fill me-1"></i> Pending Workspace Invitations
-            </div>
-            <div class="card-body p-0">
-                <ul class="list-group list-group-flush">
-                    @foreach (var invite in pendingInvites)
-                    {
-                        <li class="list-group-item d-flex justify-content-between align-items-center py-3">
-                            <div>
-                                <h6 class="mb-1 fw-bold">@invite.WorkspaceName</h6>
-                                <p class="mb-0 text-muted small">Invited by: <strong>@invite.SenderName</strong> &bull; Received: @invite.SentAt.ToShortDateString()</p>
-                            </div>
-                            <div>
-                                <button class="btn btn-sm btn-success me-2" @onclick="() => RespondInvite(invite.Id, true)">
-                                    Accept
-                                </button>
-                                <button class="btn btn-sm btn-outline-danger" @onclick="() => RespondInvite(invite.Id, false)">
-                                    Decline
-                                </button>
-                            </div>
-                        </li>
-                    }
-                </ul>
-            </div>
-        </div>
-    }
-
-    <!-- Main Workspace Browser Layout -->
-    <div class="row">
-        <!-- Workspaces List Column -->
-        <div class="col-md-5 mb-3">
-            <div class="card shadow-sm h-100">
-                <div class="card-header bg-dark text-white fw-semibold">
-                    My Workspaces
-                </div>
-                <div class="card-body p-0">
-                    @if (myWorkspaces == null)
-                    {
-                        <div class="p-3 text-muted"><em>Loading workspaces...</em></div>
-                    }
-                    else if (!myWorkspaces.Any())
-                    {
-                        <div class="p-4 text-center text-muted">
-                            You are not currently part of any workspace.
-                        </div>
-                    }
-                    else
-                    {
-                        <div class="list-group list-group-flush">
-                            @foreach (var ws in myWorkspaces)
-                            {
-                                var isSelected = selectedWorkspace?.Id == ws.Id;
-                                <button class="list-group-item list-group-item-action @(isSelected ? "active" : "")"
-                                        @onclick="() => SelectWorkspace(ws)">
-                                    <div class="d-flex w-100 justify-content-between align-items-center">
-                                        <h6 class="mb-1 fw-bold">@ws.Name</h6>
-                                        <span class="badge @(ws.WorkspaceRole == "WorkspaceAdmin" ? "bg-warning text-dark" : "bg-secondary")">
-                                            @ws.WorkspaceRole
-                                        </span>
-                                    </div>
-                                    <small class="@(isSelected ? "text-white-50" : "text-muted")">
-                                        @(string.IsNullOrWhiteSpace(ws.Description) ? "No description provided." : ws.Description)
-                                    </small>
-                                </button>
-                            }
-                        </div>
-                    }
-                </div>
-            </div>
-        </div>
-
-        <!-- Selected Workspace Detail Column -->
-        <div class="col-md-7 mb-3">
-            @if (selectedWorkspace == null)
+            if (succeeded)
             {
-                <div class="card shadow-sm h-100 d-flex align-items-center justify-content-center p-5 text-muted">
-                    <p class="mb-0">Select a workspace from the left to view members and collaboration options.</p>
-                </div>
+                selectedFileContent = content;
             }
             else
             {
-                <div class="card shadow-sm h-100">
-                    <div class="card-header bg-white d-flex justify-content-between align-items-center py-3">
-                        <div>
-                            <h5 class="mb-0 fw-bold">@selectedWorkspace.Name</h5>
-                            <small class="text-muted">Created: @selectedWorkspace.CreatedAt.ToShortDateString()</small>
-                        </div>
-                        @if (selectedWorkspace.WorkspaceRole == "WorkspaceAdmin")
-                        {
-                            <button class="btn btn-sm btn-outline-primary" @onclick="() => showInviteModal = true">
-                                <i class="bi bi-person-plus-fill me-1"></i> Invite Member
-                            </button>
-                        }
-                    </div>
-
-                    <div class="card-body">
-                        <h6 class="fw-bold mb-3">Active Workspace Members</h6>
-                        @if (workspaceMembers == null)
-                        {
-                            <p class="text-muted"><em>Loading members...</em></p>
-                        }
-                        else
-                        {
-                            <div class="table-responsive">
-                                <table class="table table-sm table-hover align-middle mb-0">
-                                    <thead class="table-light">
-                                        <tr>
-                                            <th>Name</th>
-                                            <th>Email</th>
-                                            <th>Role</th>
-                                            <th>Joined</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        @foreach (var member in workspaceMembers)
-                                        {
-                                            <tr>
-                                                <td class="fw-semibold">@member.Name</td>
-                                                <td>@member.Email</td>
-                                                <td>
-                                                    <span class="badge @(member.WorkspaceRole == "WorkspaceAdmin" ? "bg-warning text-dark" : "bg-light text-dark border")">
-                                                        @member.WorkspaceRole
-                                                    </span>
-                                                </td>
-                                                <td class="small text-muted">@member.JoinedAt.ToShortDateString()</td>
-                                            </tr>
-                                        }
-                                    </tbody>
-                                </table>
-                            </div>
-                        }
-                    </div>
-                </div>
+                gitError = error;
+                selectedFileContent = null;
             }
-        </div>
-    </div>
-</div>
-
-<!-- Modal: Create Workspace (Admin only) -->
-@if (showCreateModal)
-{
-    <div class="modal fade show d-block" style="background-color: rgba(0,0,0,0.5);">
-        <div class="modal-dialog">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title">Create New Workspace</h5>
-                    <button type="button" class="btn-close" @onclick="() => showCreateModal = false"></button>
-                </div>
-                <div class="modal-body">
-                    <div class="mb-3">
-                        <label class="form-label">Workspace Name</label>
-                        <input type="text" class="form-control" @bind="newWsName" placeholder="e.g. Core API Project" />
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label">Description</label>
-                        <textarea class="form-control" rows="3" @bind="newWsDescription" placeholder="Project goals, guidelines, or repo details..."></textarea>
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button class="btn btn-secondary" @onclick="() => showCreateModal = false">Cancel</button>
-                    <button class="btn btn-primary" @onclick="CreateWorkspace">Create</button>
-                </div>
-            </div>
-        </div>
-    </div>
-}
-
-<!-- Modal: Invite Member (WorkspaceAdmin only) -->
-@if (showInviteModal)
-{
-    <div class="modal fade show d-block" style="background-color: rgba(0,0,0,0.5);">
-        <div class="modal-dialog">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title">Invite Member to Workspace</h5>
-                    <button type="button" class="btn-close" @onclick="() => showInviteModal = false"></button>
-                </div>
-                <div class="modal-body">
-                    <label class="form-label">Registered User Email</label>
-                    <input type="email" class="form-control" @bind="inviteEmail" placeholder="colleague@domain.com" />
-                    <small class="text-muted">The user must have an existing account on CollabSpace.</small>
-                </div>
-                <div class="modal-footer">
-                    <button class="btn btn-secondary" @onclick="() => showInviteModal = false">Cancel</button>
-                    <button class="btn btn-primary" @onclick="SendInvite">Send Invitation</button>
-                </div>
-            </div>
-        </div>
-    </div>
-}
-
-@code {
-    private List<WorkspaceItem>? myWorkspaces;
-    private WorkspaceItem? selectedWorkspace;
-    private List<MemberItem>? workspaceMembers;
-    private List<InviteItem>? pendingInvites;
-
-    private bool showCreateModal = false;
-    private bool showInviteModal = false;
-    private string newWsName = string.Empty;
-    private string newWsDescription = string.Empty;
-    private string inviteEmail = string.Empty;
-
-    private string? statusMessage;
-    private string? errorMessage;
-
-    protected override async Task OnInitializedAsync()
-    {
-        await LoadInitialData();
+        }
+        catch (Exception ex)
+        {
+            gitError = $"Error opening file: {ex.Message}";
+        }
+        finally
+        {
+            isFileLoading = false;
+        }
     }
 
-    private async Task LoadInitialData()
+    private void CloseFileViewer()
     {
+        selectedFile = null;
+        selectedFileContent = null;
+    }
+
+    private async Task LoadRepoFiles(string path = "")
+    {
+        if (string.IsNullOrWhiteSpace(repoOwner) || string.IsNullOrWhiteSpace(repoName))
+        {
+            gitError = "Please specify both repository Owner and Repository Name.";
+            return;
+        }
+
+        isGitLoading = true;
+        gitError = null;
+        currentGitPath = path;
+
         try
         {
-            myWorkspaces = await Http.GetFromJsonAsync<List<WorkspaceItem>>("api/Workspaces/my-workspaces");
-            pendingInvites = await Http.GetFromJsonAsync<List<InviteItem>>("api/Workspaces/invites/my-invites");
+            var (succeeded, items, error) = await GitService.GetRepositoryContentsAsync(
+                repoOwner.Trim(), 
+                repoName.Trim(), 
+                path, 
+                string.IsNullOrWhiteSpace(repoBranch) ? "main" : repoBranch.Trim());
 
-            if (myWorkspaces != null && myWorkspaces.Any() && selectedWorkspace == null)
+            if (succeeded)
             {
-                await SelectWorkspace(myWorkspaces.First());
+                gitFiles = items.ToList();
+            }
+            else
+            {
+                gitError = error;
+                gitFiles = null;
             }
         }
         catch (Exception ex)
         {
-            errorMessage = $"Error loading workspaces: {ex.Message}";
+            gitError = $"Failed to fetch files: {ex.Message}";
+        }
+        finally
+        {
+            isGitLoading = false;
         }
     }
 
-    private async Task SelectWorkspace(WorkspaceItem ws)
+    private async Task NavigateToDir(string path)
     {
-        selectedWorkspace = ws;
-        workspaceMembers = null;
-        try
-        {
-            workspaceMembers = await Http.GetFromJsonAsync<List<MemberItem>>($"api/Workspaces/{ws.Id}/members");
-        }
-        catch (Exception ex)
-        {
-            errorMessage = $"Error loading members: {ex.Message}";
-        }
+        await LoadRepoFiles(path);
     }
 
-    private async Task CreateWorkspace()
+    private async Task NavigateUp()
     {
-        statusMessage = null;
-        errorMessage = null;
-
-        var payload = new { Name = newWsName, Description = newWsDescription };
-        var res = await Http.PostAsJsonAsync("api/Workspaces", payload);
-
-        if (res.IsSuccessStatusCode)
-        {
-            statusMessage = "Workspace created successfully.";
-            showCreateModal = false;
-            newWsName = string.Empty;
-            newWsDescription = string.Empty;
-            await LoadInitialData();
-        }
-        else
-        {
-            var err = await res.Content.ReadFromJsonAsync<Dictionary<string, string>>();
-            errorMessage = err != null && err.TryGetValue("message", out var msg) ? msg : "Failed to create workspace.";
-        }
-    }
-
-    private async Task SendInvite()
-    {
-        if (selectedWorkspace == null) return;
-        statusMessage = null;
-        errorMessage = null;
-
-        var payload = new { ReceiverEmail = inviteEmail };
-        var res = await Http.PostAsJsonAsync($"api/Workspaces/{selectedWorkspace.Id}/invite", payload);
-
-        if (res.IsSuccessStatusCode)
-        {
-            statusMessage = $"Invitation successfully sent to {inviteEmail}.";
-            showInviteModal = false;
-            inviteEmail = string.Empty;
-        }
-        else
-        {
-            var err = await res.Content.ReadFromJsonAsync<Dictionary<string, string>>();
-            errorMessage = err != null && err.TryGetValue("message", out var msg) ? msg : "Failed to send invitation.";
-        }
-    }
-
-    private async Task RespondInvite(int inviteId, bool accept)
-    {
-        statusMessage = null;
-        errorMessage = null;
-
-        var res = await Http.PostAsJsonAsync($"api/Workspaces/invites/{inviteId}/respond", new { Accept = accept });
-
-        if (res.IsSuccessStatusCode)
-        {
-            statusMessage = accept ? "Workspace invitation accepted." : "Workspace invitation declined.";
-            await LoadInitialData();
-        }
-        else
-        {
-            errorMessage = "Failed to process invitation.";
-        }
-    }
-
-    // View Model Classes
-    public class WorkspaceItem
-    {
-        public int Id { get; set; }
-        public string Name { get; set; } = string.Empty;
-        public string Description { get; set; } = string.Empty;
-        public string WorkspaceRole { get; set; } = string.Empty;
-        public DateTime CreatedAt { get; set; }
-    }
-
-    public class MemberItem
-    {
-        public string UserId { get; set; } = string.Empty;
-        public string UserName { get; set; } = string.Empty;
-        public string Name { get; set; } = string.Empty;
-        public string Email { get; set; } = string.Empty;
-        public string WorkspaceRole { get; set; } = string.Empty;
-        public DateTime JoinedAt { get; set; }
-    }
-
-    public class InviteItem
-    {
-        public int Id { get; set; }
-        public int WorkspaceId { get; set; }
-        public string WorkspaceName { get; set; } = string.Empty;
-        public string WorkspaceDescription { get; set; } = string.Empty;
-        public string SenderName { get; set; } = string.Empty;
-        public DateTime SentAt { get; set; }
+        if (string.IsNullOrEmpty(currentGitPath)) return;
+        var lastSlash = currentGitPath.LastIndexOf('/');
+        var parentPath = lastSlash > 0 ? currentGitPath.Substring(0, lastSlash) : "";
+        await LoadRepoFiles(parentPath);
     }
 }
-
-*@
