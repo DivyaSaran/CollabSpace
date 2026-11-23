@@ -6,7 +6,21 @@
     </div>
 
     <main>
-        <div class="top-row px-4">
+        
+        <div class="top-row px-4 d-flex justify-content-end align-items-center gap-3">
+            <AuthorizeView>
+                <Authorized>
+                    <span class="text-muted small d-flex align-items-center">
+                        <i class="bi bi-person-circle me-1 text-primary" style="font-size: 1rem;"></i>
+                        Welcome, <strong class="text-dark ms-1">@(context.User.FindFirst("DisplayName")?.Value ?? context.User.Identity?.Name)</strong>
+                    </span>
+                </Authorized>
+                <NotAuthorized>
+                    <a href="login" class="text-decoration-none small fw-semibold">Login</a>
+                    <a href="login?mode=register" class="text-decoration-none small fw-semibold">Register</a>
+                </NotAuthorized>
+            </AuthorizeView>
+
             <a href="https://learn.microsoft.com/aspnet/core/" target="_blank">About</a>
         </div>
 

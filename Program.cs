@@ -6,6 +6,7 @@ using CollabSpace.Services;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 
+
 var builder = WebApplication.CreateBuilder(args);
 
 // 1. Blazor Server Components
@@ -61,10 +62,26 @@ builder.Services.AddIdentity<User, IdentityRole>(options =>
 //  Cookie configuration
 builder.Services.ConfigureApplicationCookie(options =>
 {
-    options.Cookie.Name = "CollabSpace.Auth";
+    options.Cookie.Name = "CollabSpace.AuthCookie";
+    options.Cookie.HttpOnly = true;
+    options.Cookie.SameSite = SameSiteMode.Lax;
+    options.ExpireTimeSpan = TimeSpan.FromMinutes(3); // Cookie expires after 60 mins (temporarily 3 mins)
+    options.SlidingExpiration = true;                  // Resets timer if user is active
     options.LoginPath = "/login";
-    options.AccessDeniedPath = "/not-found";
-    options.ExpireTimeSpan = TimeSpan.FromHours(8);
+    options.LogoutPath = "/api/auth/logout";
+    options.AccessDeniedPath = "/access-denied";
+});
+
+// Register Custom Claims Factory (adds DisplayName, UserId, Email, Username to the cookie)
+builder.Services.AddScoped<IUserClaimsPrincipalFactory<User>, CustomUserClaimsPrincipalFactory>();
+
+// Optional: Define Claims-Based Authorization Policies
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy("ValidCollabUser", policy =>
+        policy.RequireAuthenticatedUser()
+              .RequireClaim(System.Security.Claims.ClaimTypes.Email)
+              .RequireClaim("DisplayName"));
 });
 
 //  Blazor authentication state cascaded to all components

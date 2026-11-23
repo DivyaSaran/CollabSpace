@@ -22,42 +22,59 @@
                 <!-- Visible only to logged-in users -->
                 <div class="nav-item px-3">
                     <NavLink class="nav-link d-flex align-items-center" href="users">
-                        <span class="bi bi-people-fill me-3" style="line-height: 1; font-size: 1.1rem;" aria-hidden="true"></span> CollabSpace Users
+                        <i class="bi bi-people-fill me-3" style="line-height: 1; font-size: 1.1rem;" aria-hidden="true"></i>
+                        <span>CollabSpace Users</span>
                     </NavLink>
                 </div>
 
                 <div class="nav-item px-3">
                     <NavLink class="nav-link d-flex align-items-center" href="workspaces">
-                        <span class="bi bi-kanban-fill me-3" style="line-height: 1; font-size: 1.1rem;" aria-hidden="true"></span> Workspaces
+                        <i class="bi bi-kanban-fill me-3" style="line-height: 1; font-size: 1.1rem;" aria-hidden="true"></i>
+                        <span>Workspaces</span>
                     </NavLink>
-               </div>
+                </div>
 
-                <!-- User profile badge & logout -->
-                <div class="nav-item px-3 mt-3 border-top pt-2">
-                    <span class="text-white-50 small px-3">Signed in as:</span>
-                    <div class="text-white fw-semibold px-3 text-truncate">@context.User.Identity?.Name</div>
+                <!-- User profile badge (reads DisplayName & Email claims) & logout -->
+                <div class="nav-item px-3 mt-3 border-top border-secondary pt-2">
+                    <div class="px-3 py-1 text-white">
+                        <small class="text-white-50 d-block">Signed in as:</small>
+                        <strong class="d-block text-truncate">
+                            @(context.User.FindFirst("DisplayName")?.Value ?? context.User.Identity?.Name)
+                        </strong>
+                        <small class="text-white-50 d-block text-truncate" style="font-size: 0.75rem;">
+                            @context.User.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value
+                        </small>
+                    </div>
 
                     <AuthorizeView Roles="Admin" Context="adminContext">
-                        <div class="nav-item px-3">
+                        <div class="nav-item px-3 mt-1">
                             <NavLink class="nav-link d-flex align-items-center" href="roles" Match="NavLinkMatch.Prefix">
-                                <span class="bi bi-shield-lock-fill me-3" style="line-height: 1; font-size: 1.1rem;" aria-hidden="true"></span> Role Management
+                                <i class="bi bi-shield-lock-fill me-3" style="line-height: 1; font-size: 1.1rem;" aria-hidden="true"></i>
+                                <span>Role Management</span>
                             </NavLink>
                         </div>
                     </AuthorizeView>
 
                     <div class="px-3 mt-2">
                         <button class="btn btn-sm btn-danger w-100 fw-semibold" @onclick="HandleLogout">
-                            Sign Out
+                            <i class="bi bi-box-arrow-right me-1"></i> Sign Out
                         </button>
                     </div>
                 </div>
-
             </Authorized>
+
             <NotAuthorized>
                 <!-- Visible only to guests -->
+                <div class="nav-item px-3 mt-2">
+                    <NavLink class="nav-link d-flex align-items-center" href="login">
+                        <i class="bi bi-box-arrow-in-right me-3" style="line-height: 1; font-size: 1.1rem;" aria-hidden="true"></i>
+                        <span>Login</span>
+                    </NavLink>
+                </div>
                 <div class="nav-item px-3">
-                    <NavLink class="nav-link" href="login">
-                        <span class="bi bi-box-arrow-in-right" aria-hidden="true"></span> Sign In / Register
+                    <NavLink class="nav-link d-flex align-items-center" href="login?mode=register">
+                        <i class="bi bi-person-plus-fill me-3" style="line-height: 1; font-size: 1.1rem;" aria-hidden="true"></i>
+                        <span>Register</span>
                     </NavLink>
                 </div>
             </NotAuthorized>

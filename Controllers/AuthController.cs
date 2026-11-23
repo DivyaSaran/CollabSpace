@@ -1,6 +1,10 @@
-﻿using CollabSpace.Models;
+﻿using CollabSpace.DTOs;
+using CollabSpace.Models;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.WebUtilities;
+using System.Text;
 
 namespace CollabSpace.Controllers
 {
@@ -144,7 +148,75 @@ namespace CollabSpace.Controllers
             await _signInManager.SignOutAsync();
             return Ok(new { message = "Logged out successfully." });
         }
+
+        [HttpPost("forgot-password")]
+        [AllowAnonymous]
+        public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordDto model)
+        {
+            if (!ModelState.IsValid)
+                return BadRequest(ModelState);
+
+            var user = await _userManager.FindByEmailAsync(model.Email.Trim());
+            if (user == null)
+            {
+                // Security best practice: do not reveal whether the email exists
+                return Ok(new { Message = "If an account with that email exists, a password reset link has been generated." });
+            }
+
+            // Generate cryptographic Identity reset token and Base64Url-encode it for safe URL transport
+            var rawToken = await _userManager.GeneratePasswordResetTokenAsync(user);
+            var encodedToken = WebEncoders.Base64UrlEncode(Encoding.UTF8.GetBytes(rawToken));
+
+            // Build the reset URL pointing to your Blazor page
+            var resetUrl = $"{Request.Scheme}://{Request.Host}/reset-password?email={Uri.EscapeDataString(user.Email!)}&token={encodedToken}";
+
+            // In production, send `resetUrl` via IEmailSender. For local dev/testing, return it in the response:
+            return Ok(new
+            {
+                Message = "Password reset link generated.",
+                ResetLink = resetUrl
+            });
+        }
+
+        [HttpPost("reset-password")]
+        [AllowAnonymous]
+        public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordDto model)
+        {
+            if (!ModelState.IsValid)
+                return BadRequest(ModelState);
+
+            var user = await _userManager.FindByEmailAsync(model.Email.Trim());
+            if (user == null)
+            {
+                return BadRequest(new { Message = "Invalid password reset request." });
+            }
+
+            try
+            {
+                var decodedBytes = WebEncoders.Base64UrlDecode(model.Token);
+                var rawToken = Encoding.UTF8.GetString(decodedBytes);
+
+                var result = await _userManager.ResetPasswordAsync(user, rawToken, model.NewPassword);
+                if (result.Succeeded)
+                {
+                    // Optional: Clear any existing lockout count after a successful password reset
+                    await _userManager.ResetAccessFailedCountAsync(user);
+                    return Ok(new { Message = "Your password has been reset successfully. You can now sign in." });
+                }
+
+                var errors = string.Join(" ", result.Errors.Select(e => e.Description));
+                return BadRequest(new { Message = errors });
+            }
+            catch
+            {
+                return BadRequest(new { Message = "Invalid or expired reset token." });
+            }
+        }
+
     }
+
+
+
 
     // Data Transfer Objects (DTOs)
     public class RegisterRequest

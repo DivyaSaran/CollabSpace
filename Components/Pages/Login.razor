@@ -59,9 +59,12 @@
                                 <input class="form-control" type="password" name="Password" required />
                             </div>
 
+                            <div class="d-flex justify-content-between align-items-center mb-3">
                             <div class="form-check mb-3">
                                 <input class="form-check-input" type="checkbox" name="RememberMe" value="true" id="rememberCheck" />
                                 <label class="form-check-label" for="rememberCheck">Remember Me</label>
+                            </div>
+                                <a href="forgot-password" class="small text-decoration-none">Forgot password?</a>
                             </div>
 
                             <button type="submit" class="btn btn-primary w-100">Sign In</button>
@@ -90,7 +93,7 @@
 
                             <div class="mb-3">
                                 <label class="form-label">Password (Min 6 chars, 1 digit)</label>
-                                <InputText class="form-control" type="password" @bind-Value="registerModel.Password" required />
+                                <InputText class="form-control" type="password" @bind-Value="registerModel.Password" autocomplete="new-password" required />
                             </div>
 
                             <div class="mb-3">
@@ -117,17 +120,39 @@
     [SupplyParameterFromQuery(Name = "error")]
     private string? errorQuery { get; set; }
 
+    [SupplyParameterFromQuery(Name = "mode")]
+    private string? modeQuery { get; set; }
+
     private bool isLoginMode = true;
     private bool isLoading = false;
     private string? statusMessage;
 
     private RegisterRequest registerModel = new();
 
+    protected override void OnParametersSet()
+    {
+        if (string.Equals(modeQuery, "register", StringComparison.OrdinalIgnoreCase))
+        {
+            isLoginMode = false;
+            registerModel = new();
+        }
+        else if (string.Equals(modeQuery, "login", StringComparison.OrdinalIgnoreCase))
+        {
+            isLoginMode = true;
+        }
+    }
+
     private void SetMode(bool login)
     {
         isLoginMode = login;
         errorQuery = null;
         statusMessage = null;
+        if (!login)
+        {
+            registerModel = new();
+        }
+        // Keep the URL query string in sync when clicking the inner pill tabs
+        NavManager.NavigateTo(login ? "/login?mode=login" : "/login?mode=register", replace: true);
     }
 
     private async Task HandleRegister()
